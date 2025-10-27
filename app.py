@@ -46,7 +46,13 @@ def main() -> None:
     for (page_key, title, render_fn), tab in zip(PAGE_DEFINITIONS, tabs):
         with tab:
             st.subheader(title)
-            render_fn(filters)
+            try:
+                render_fn(filters)
+            except Exception as exc:  # pragma: no cover - diagnostic surfacing
+                st.error(
+                    f"An error occurred while rendering **{title}**: {exc}"
+                )
+                st.exception(exc)
 
 
 if __name__ == "__main__":
