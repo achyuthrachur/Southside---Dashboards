@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
+import tempfile
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -20,7 +21,7 @@ from wow_risk_dashboard.io import (
     normalize_token,
 )
 
-UPLOAD_CACHE_DIR = Path("processed") / "uploaded_csvs"
+UPLOAD_CACHE_DIR = Path(tempfile.gettempdir()) / "southside_bank_uploads"
 UPLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -177,7 +178,12 @@ def render_inputs_panel(
                 digest = sha256(content).hexdigest()[:16]
                 extension = Path(uploaded.name).suffix or ".csv"
                 cached_path = UPLOAD_CACHE_DIR / f"{page_key}_{config.key}_{digest}{extension}"
-                cached_path.write_bytes(content)
+                try:
+                    cached_path.write_bytes(content)
+                except Exception as exc:  # pragma: no cover - filesystem guard
+                    status.errors.append(f"Unable to persist uploaded file: {exc}")
+                    statuses[config.key] = status
+                    continue
                 status.file_path = str(cached_path)
 
                 try:
