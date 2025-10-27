@@ -1,11 +1,11 @@
 """
-Reusable components for rendering per-page input panels with validation.
+Reusable components for rendering Southside Bank page input panels.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -13,23 +13,43 @@ import streamlit as st
 from wow_risk_dashboard.io import (
     DATASET_SPECS,
     DatasetSpec,
-    LoadedFile,
     load_uploaded_files,
     normalize_headers,
     normalize_token,
 )
 
 
+@st.cache_data(show_spinner=False, ttl=None)
+def _load_uploaded_bytes(
+    cache_key: Tuple[str, str, str, int],
+    file_name: str,
+    content: bytes,
+) -> Dict[str, Dict[str, object]]:
+    """
+    Read raw CSV bytes and return DataFrames plus diagnostics keyed by dataset type.
+
+    The cache key combines page key, input key, file name, and file size so that
+    replacing a file with different contents invalidates the cache automatically.
+    """
+    loaded = load_uploaded_files({file_name: content})
+    result: Dict[str, Dict[str, object]] = {}
+    for dataset_key, records in loaded.items():
+        if not records:
+            continue
+        record = records[0]
+        result[dataset_key] = {
+            "dataframe": record.dataframe,
+            "diagnostics": record.diagnostics,
+        }
+    return result
+
+
 @dataclass
 class HeaderExpectation:
-    """
-    Represents a set of canonical fields that satisfy a logical requirement.
-    """
-
     name: str
     candidates: List[str]
     required: bool = True
-    match: str = "all"  # "all" => every candidate, "any" => at least one candidate
+    match: str = "all"  # "all" => every candidate must be present, "any" => first match wins
     note: Optional[str] = None
 
 
@@ -47,7 +67,6 @@ class PageInputConfig:
 class InputStatus:
     config: PageInputConfig
     uploaded_file: Optional[str] = None
-    loaded_file: Optional[LoadedFile] = None
     dataframe: Optional[pd.DataFrame] = None
     encoding: Optional[str] = None
     row_count: Optional[int] = None
@@ -71,21 +90,19 @@ class InputPanelState:
 
     @property
     def missing_required_files(self) -> List[str]:
-        missing: List[str] = []
-        for status in self.statuses.values():
-            if not status.config.required:
-                continue
-            if not status.is_loaded:
-                missing.append(status.config.title)
-        return missing
+        return [
+            status.config.title
+            for status in self.statuses.values()
+            if status.config.required and not status.is_loaded
+        ]
 
     @property
     def missing_required_headers(self) -> Dict[str, List[str]]:
-        report: Dict[str, List[str]] = {}
-        for key, status in self.statuses.items():
-            if status.config.required and status.missing_headers:
-                report[status.config.title] = status.missing_headers
-        return report
+        return {
+            status.config.title: status.missing_headers
+            for status in self.statuses.values()
+            if status.config.required and status.missing_headers
+        }
 
     @property
     def ready(self) -> bool:
@@ -94,16 +111,12 @@ class InputPanelState:
 
 def _match_columns(
     spec: DatasetSpec,
-    df_columns: List[str],
+    dataframe: pd.DataFrame,
     expectation: HeaderExpectation,
 ) -> Tuple[Dict[str, str], List[str]]:
-    """
-    Return a mapping of canonical field -> actual column for the expectation
-    and a list describing missing headers.
-    """
-    header_map = normalize_headers(df_columns)
+    header_map = normalize_headers(dataframe.columns)
 
-    def find_alias(canonical: str) -> Optional[str]:
+    def find_column(canonical: str) -> Optional[str]:
         for alias in spec.alias_for(canonical):
             token = normalize_token(alias)
             if token in header_map:
@@ -115,16 +128,16 @@ def _match_columns(
 
     if expectation.match == "all":
         for canonical in expectation.candidates:
-            column_name = find_alias(canonical)
-            if column_name:
-                selected[canonical] = column_name
+            column = find_column(canonical)
+            if column:
+                selected[canonical] = column
             else:
                 missing.append(canonical)
     else:  # expectation.match == "any"
         for canonical in expectation.candidates:
-            column_name = find_alias(canonical)
-            if column_name:
-                selected[canonical] = column_name
+            column = find_column(canonical)
+            if column:
+                selected[canonical] = column
                 break
         else:
             if expectation.required:
@@ -137,18 +150,16 @@ def render_inputs_panel(
     page_key: str,
     configs: List[PageInputConfig],
 ) -> InputPanelState:
-    """
-    Render page-specific input controls and return their validation state.
-    """
     st.markdown("### Inputs")
     statuses: Dict[str, InputStatus] = {}
 
     for config in configs:
         spec = DATASET_SPECS[config.dataset_key]
-        container = st.container()
-        with container:
-            requirement_label = "Required" if config.required else "Optional"
-            st.markdown(f"**{config.title}** · _{requirement_label}_")
+        status = InputStatus(config=config)
+
+        with st.container():
+            label = "Required" if config.required else "Optional"
+            st.markdown(f"**{config.title}** · _{label}_")
             if config.description:
                 st.caption(config.description)
 
@@ -157,107 +168,68 @@ def render_inputs_panel(
                 "Drag and drop or browse",
                 type=["csv"],
                 key=uploader_key,
-                help=f"Upload a file matching the {config.title.lower()} specification.",
+                help=f"Upload the {config.title.lower()} file.",
             )
-
-            status = InputStatus(config=config)
 
             if uploaded is not None:
                 status.uploaded_file = uploaded.name
-
-                cache_bucket: Dict[str, Dict[Any, Dict[str, Any]]] = st.session_state.setdefault(
-                    FILE_CACHE_STATE_KEY, {}
-                )
-                page_cache = cache_bucket.setdefault(page_key, {})
-                cache_key = (
-                    config.key,
-                    uploaded.name,
-                    getattr(uploaded, "size", None),
-                )
-
-                cached_entry = page_cache.get(cache_key)
-                if cached_entry:
-                    if "error" in cached_entry:
-                        status.errors.append(cached_entry["error"])
-                    else:
-                        record: LoadedFile = cached_entry["record"]
-                        status.loaded_file = record
-                        status.dataframe = record.dataframe
-                        status.row_count = len(record.dataframe)
-                        status.encoding = record.diagnostics.get("encoding")
+                content = uploaded.getvalue()
+                cache_key = (page_key, config.key, uploaded.name, len(content))
+                try:
+                    cached = _load_uploaded_bytes(cache_key, uploaded.name, content)
+                except ValueError as exc:
+                    status.errors.append(str(exc))
                 else:
-                    content = uploaded.getvalue()
-                    try:
-                        loaded_map = load_uploaded_files({uploaded.name: content})
-                    except ValueError as exc:
-                        message = str(exc)
-                        status.errors.append(message)
-                        page_cache[cache_key] = {"error": message}
-                    else:
-                        if config.dataset_key not in loaded_map:
-                            detected_keys = ", ".join(loaded_map.keys()) or "none"
-                            message = (
-                                f"Detected dataset type(s): {detected_keys}. "
-                                f"Expected '{config.dataset_key}'."
-                            )
-                            status.errors.append(message)
-                            page_cache[cache_key] = {"error": message}
-                        else:
-                            record = loaded_map[config.dataset_key][0]
-                            status.loaded_file = record
-                            status.dataframe = record.dataframe
-                            status.row_count = len(record.dataframe)
-                            status.encoding = record.diagnostics.get("encoding")
-                            page_cache[cache_key] = {"record": record}
-
-                if status.dataframe is not None:
-                    for expectation in config.expectations:
-                        selected, missing = _match_columns(
-                            spec,
-                            status.dataframe.columns.tolist(),
-                            expectation,
+                    if config.dataset_key not in cached:
+                        detected = ", ".join(cached.keys()) or "none"
+                        status.errors.append(
+                            f"Detected dataset type(s): {detected}. Expected '{config.dataset_key}'."
                         )
-                        status.selected_columns.update(selected)
-                        if missing and expectation.required:
-                            status.missing_headers.extend(
-                                f"{expectation.name}: {item}" for item in missing
-                            )
+                    else:
+                        payload = cached[config.dataset_key]
+                        dataframe = payload["dataframe"]
+                        diagnostics = payload["diagnostics"]
+                        status.dataframe = dataframe
+                        status.row_count = len(dataframe)
+                        status.encoding = diagnostics.get("encoding")
+
+                        for expectation in config.expectations:
+                            selected, missing = _match_columns(spec, dataframe, expectation)
+                            status.selected_columns.update(selected)
+                            if missing and expectation.required:
+                                status.missing_headers.extend(
+                                    f"{expectation.name}: {item}" for item in missing
+                                )
 
             statuses[config.key] = status
 
-            # Status messaging
             if status.errors:
                 for error in status.errors:
                     st.error(error)
             elif status.is_loaded:
-                info_parts = [f"✅ Loaded — {status.row_count:,} rows"]
+                details = [f"✅ Loaded — {status.row_count:,} rows"]
                 if status.encoding:
-                    info_parts.append(f"encoding: {status.encoding}")
-                st.success("; ".join(info_parts))
+                    details.append(f"encoding: {status.encoding}")
+                st.success("; ".join(details))
             else:
                 icon = "⛔" if config.required else "ℹ️"
-                label = "Missing (required)" if config.required else "Missing (optional)"
-                st.info(f"{icon} {label}")
+                descriptor = "Missing (required)" if config.required else "Missing (optional)"
+                st.info(f"{icon} {descriptor}")
 
             if status.missing_headers:
-                st.warning(
-                    "Missing headers detected: "
-                    + "; ".join(status.missing_headers)
-                )
+                st.warning("Missing headers detected: " + "; ".join(status.missing_headers))
 
-            # Header expectations summary
             if config.expectations:
-                lines = []
+                summary_lines = []
                 for expectation in config.expectations:
                     requirement = "Required" if expectation.required else "Optional"
                     priority = " → ".join(expectation.candidates)
                     note = f" — {expectation.note}" if expectation.note else ""
-                    lines.append(f"- `{expectation.name}` ({requirement}): {priority}{note}")
-                st.caption("\n".join(lines))
+                    summary_lines.append(f"- `{expectation.name}` ({requirement}): {priority}{note}")
+                st.caption("\n".join(summary_lines))
 
     state = InputPanelState(page_key=page_key, statuses=statuses)
 
-    # Persist diagnostic information for explain modal reference.
     explain_state = st.session_state.setdefault("southside_explain", {})
     explain_state[page_key] = {
         key: {
@@ -272,4 +244,3 @@ def render_inputs_panel(
     }
 
     return state
-FILE_CACHE_STATE_KEY = "southside_file_cache"
