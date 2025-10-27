@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "wow-risk-dashboard"
+version = "0.1.0"
+description = "Streamlit dashboard for WOW Risk analytics."
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{include = "wow_risk_dashboard"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+streamlit = "^1.38.0"
+pandas = "^2.2.0"
+numpy = "^1.26.0"
+pyarrow = "^17.0.0"
+plotly = "^5.24.0"
+altair = "^5.3.0"
+scikit-learn = "^1.5.0"
+statsmodels = "^0.14.0"
+requests = "^2.32.0"
+geopandas = "^1.0.0"
+pydeck = "^0.9.1"
+us = "^3.1.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.0"
+isort = "^5.13.0"
+pytest = "^8.0.0"
+mypy = "^1.10.0"
+types-requests = "^2.32.0"
+
+[build-system]
+requires = ["poetry-core>=1.7.0"]
+build-backend = "poetry.core.masonry.api"

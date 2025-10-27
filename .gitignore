@@ -1,0 +1,16 @@
+.venv/
+env/
+.env
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.DS_Store
+.streamlit/secrets.toml
+*.pyc
+logs/
+data/
+processed/
+cache/
+dist/
+build/
