@@ -4,12 +4,13 @@ Streamlit page for expected vs realized loss backtesting.
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import Any
+
 import streamlit as st
 
 
 def render_backtest_page(
-    backtest_data: dict,
+    backtest_data: Any,
     filters: dict,
 ) -> None:
     """

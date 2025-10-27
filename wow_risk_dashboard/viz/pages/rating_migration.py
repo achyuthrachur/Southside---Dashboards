@@ -4,12 +4,13 @@ Streamlit page for the risk rating migration visualization.
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import Any
+
 import streamlit as st
 
 
 def render_rating_migration_page(
-    migration_data: dict,
+    migration_data: Any,
     filters: dict,
 ) -> None:
     """

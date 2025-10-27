@@ -4,12 +4,13 @@ Streamlit page for the real-estate PD heatmap.
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import Any
+
 import streamlit as st
 
 
 def render_real_estate_pd_page(
-    harmonized_data: pd.DataFrame,
+    harmonized_data: Any,
     filters: dict,
 ) -> None:
     """

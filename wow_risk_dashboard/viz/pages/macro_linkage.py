@@ -4,12 +4,13 @@ Streamlit page for macro linkage analytics.
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import Any
+
 import streamlit as st
 
 
 def render_macro_linkage_page(
-    macro_data: dict,
+    macro_data: Any,
     filters: dict,
 ) -> None:
     """
