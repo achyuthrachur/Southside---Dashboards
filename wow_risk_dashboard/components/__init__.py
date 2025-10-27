@@ -9,6 +9,7 @@ from .inputs import (
     HeaderExpectation,
     InputPanelState,
     PageInputConfig,
+    load_input_dataframe,
     render_inputs_panel,
 )
 
@@ -20,4 +21,5 @@ __all__ = [
     "InputPanelState",
     "PageInputConfig",
     "render_inputs_panel",
+    "load_input_dataframe",
 ]

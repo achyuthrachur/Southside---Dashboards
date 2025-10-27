@@ -5,6 +5,8 @@ Reusable components for rendering Southside Bank page input panels.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -18,30 +20,27 @@ from wow_risk_dashboard.io import (
     normalize_token,
 )
 
+UPLOAD_CACHE_DIR = Path("processed") / "uploaded_csvs"
+UPLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 
 @st.cache_data(show_spinner=False, ttl=None)
-def _load_uploaded_bytes(
-    cache_key: Tuple[str, str, str, int],
-    file_name: str,
-    content: bytes,
-) -> Dict[str, Dict[str, object]]:
-    """
-    Read raw CSV bytes and return DataFrames plus diagnostics keyed by dataset type.
+def _compute_row_count(path: str) -> int:
+    """Return the number of rows in a cached CSV without loading it into memory."""
+    total = 0
+    for chunk in pd.read_csv(path, dtype=str, chunksize=200_000, na_filter=False):
+        total += chunk.shape[0]
+    return total
 
-    The cache key combines page key, input key, file name, and file size so that
-    replacing a file with different contents invalidates the cache automatically.
+
+@st.cache_data(show_spinner=False, ttl=None)
+def load_input_dataframe(path: str, columns: Optional[Tuple[str, ...]] = None) -> pd.DataFrame:
     """
-    loaded = load_uploaded_files({file_name: content})
-    result: Dict[str, Dict[str, object]] = {}
-    for dataset_key, records in loaded.items():
-        if not records:
-            continue
-        record = records[0]
-        result[dataset_key] = {
-            "dataframe": record.dataframe,
-            "diagnostics": record.diagnostics,
-        }
-    return result
+    Load cached CSV data with optional column selection. Results are cached per
+    file path and column tuple to avoid repeated disk IO.
+    """
+    usecols = list(columns) if columns else None
+    return pd.read_csv(path, dtype=str, usecols=usecols, na_filter=False)
 
 
 @dataclass
@@ -67,7 +66,8 @@ class PageInputConfig:
 class InputStatus:
     config: PageInputConfig
     uploaded_file: Optional[str] = None
-    dataframe: Optional[pd.DataFrame] = None
+    file_path: Optional[str] = None
+    available_columns: List[str] = field(default_factory=list)
     encoding: Optional[str] = None
     row_count: Optional[int] = None
     errors: List[str] = field(default_factory=list)
@@ -76,7 +76,7 @@ class InputStatus:
 
     @property
     def is_loaded(self) -> bool:
-        return self.dataframe is not None and not self.errors
+        return self.file_path is not None and not self.errors
 
     @property
     def is_ready(self) -> bool:
@@ -111,10 +111,10 @@ class InputPanelState:
 
 def _match_columns(
     spec: DatasetSpec,
-    dataframe: pd.DataFrame,
+    columns: List[str],
     expectation: HeaderExpectation,
 ) -> Tuple[Dict[str, str], List[str]]:
-    header_map = normalize_headers(dataframe.columns)
+    header_map = normalize_headers(columns)
 
     def find_column(canonical: str) -> Optional[str]:
         for alias in spec.alias_for(canonical):
@@ -174,27 +174,38 @@ def render_inputs_panel(
             if uploaded is not None:
                 status.uploaded_file = uploaded.name
                 content = uploaded.getvalue()
-                cache_key = (page_key, config.key, uploaded.name, len(content))
+                digest = sha256(content).hexdigest()[:16]
+                extension = Path(uploaded.name).suffix or ".csv"
+                cached_path = UPLOAD_CACHE_DIR / f"{page_key}_{config.key}_{digest}{extension}"
+                cached_path.write_bytes(content)
+                status.file_path = str(cached_path)
+
                 try:
-                    cached = _load_uploaded_bytes(cache_key, uploaded.name, content)
+                    loaded = load_uploaded_files({uploaded.name: content})
                 except ValueError as exc:
                     status.errors.append(str(exc))
                 else:
-                    if config.dataset_key not in cached:
-                        detected = ", ".join(cached.keys()) or "none"
+                    if config.dataset_key not in loaded:
+                        detected = ", ".join(loaded.keys()) or "none"
                         status.errors.append(
                             f"Detected dataset type(s): {detected}. Expected '{config.dataset_key}'."
                         )
                     else:
-                        payload = cached[config.dataset_key]
-                        dataframe = payload["dataframe"]
-                        diagnostics = payload["diagnostics"]
-                        status.dataframe = dataframe
-                        status.row_count = len(dataframe)
-                        status.encoding = diagnostics.get("encoding")
+                        record = loaded[config.dataset_key][0]
+                        status.available_columns = list(record.dataframe.columns)
+                        status.encoding = record.diagnostics.get("encoding")
+
+                        try:
+                            status.row_count = _compute_row_count(status.file_path)
+                        except Exception as exc:  # pragma: no cover
+                            status.errors.append(f"Unable to count rows: {exc}")
 
                         for expectation in config.expectations:
-                            selected, missing = _match_columns(spec, dataframe, expectation)
+                            selected, missing = _match_columns(
+                                spec,
+                                status.available_columns,
+                                expectation,
+                            )
                             status.selected_columns.update(selected)
                             if missing and expectation.required:
                                 status.missing_headers.extend(
@@ -238,6 +249,7 @@ def render_inputs_panel(
             "selected_columns": status.selected_columns,
             "missing_headers": status.missing_headers,
             "row_count": status.row_count,
+            "file_path": status.file_path,
         }
         for key, status in statuses.items()
         if status.is_loaded

@@ -14,6 +14,7 @@ from wow_risk_dashboard.components import (
     PageInputConfig,
     export_controls,
     render_inputs_panel,
+    load_input_dataframe,
 )
 
 PAGE_KEY = "rating_migration"
@@ -171,18 +172,13 @@ def _render_readiness(panel_state) -> bool:
     return False
 
 
-def _extract_quarter(df: pd.DataFrame, column: str) -> Optional[str]:
-    if column not in df.columns:
-        return None
-    dates = pd.to_datetime(df[column], errors="coerce")
-    dates = dates.dropna()
-    if dates.empty:
-        return None
-    quarter = dates.dt.to_period("Q")
-    unique_quarters = quarter.unique()
-    if len(unique_quarters) == 1:
-        return str(unique_quarters[0])
-    return None
+def _dates_from_status(status, column_name: Optional[str]) -> pd.Series:
+    if not column_name or column_name not in status.selected_columns.values():
+        return pd.Series(dtype="datetime64[ns]")
+    if not status.file_path:
+        return pd.Series(dtype="datetime64[ns]")
+    df = load_input_dataframe(status.file_path, (column_name,))
+    return pd.to_datetime(df[column_name], errors="coerce").dropna()
 
 
 def _validate_quarters(panel_state) -> List[str]:
@@ -190,28 +186,30 @@ def _validate_quarters(panel_state) -> List[str]:
     for status in panel_state.statuses.values():
         if not status.is_loaded:
             continue
-        df = status.dataframe
         selected = status.selected_columns
-        quarter_column = (
-            selected.get("reportingDate") or selected.get("asOfDate")
-        )
-        if quarter_column:
-            quarter_value = _extract_quarter(df, quarter_column)
-            expected_quarter = "2023Q2" if "2023" in status.config.key else "2025Q2"
-            if quarter_value is None:
-                errors.append(
-                    f"Unable to determine a unique quarter from `{quarter_column}` in "
-                    f"{status.config.title}. Ensure values align with {expected_quarter}."
-                )
-            elif quarter_value != expected_quarter:
-                errors.append(
-                    f"{status.config.title} appears to use {quarter_value} data. "
-                    f"Expected {expected_quarter}."
-                )
-        else:
+        quarter_column = selected.get("reportingDate") or selected.get("asOfDate")
+        dates = _dates_from_status(status, quarter_column)
+        expected_quarter = "2023Q2" if "2023" in status.config.key else "2025Q2"
+
+        if dates.empty:
             errors.append(
                 f"{status.config.title} is missing reporting/as-of date columns needed "
                 "for quarter validation."
+            )
+            continue
+
+        quarter_values = dates.dt.to_period("Q").unique()
+        if len(quarter_values) != 1:
+            errors.append(
+                f"{status.config.title} contains multiple quarters ({', '.join(str(q) for q in quarter_values)}). "
+                f"Expected {expected_quarter}."
+            )
+            continue
+
+        if str(quarter_values[0]) != expected_quarter:
+            errors.append(
+                f"{status.config.title} appears to use {quarter_values[0]} data. "
+                f"Expected {expected_quarter}."
             )
     return errors
 

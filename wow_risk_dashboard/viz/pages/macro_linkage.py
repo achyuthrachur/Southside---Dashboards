@@ -15,6 +15,7 @@ from wow_risk_dashboard.components import (
     PageInputConfig,
     export_controls,
     render_inputs_panel,
+    load_input_dataframe,
 )
 
 PAGE_KEY = "macro_linkage"
@@ -24,7 +25,7 @@ EXPECTED_END = datetime(2025, 6, 30)
 INPUT_CONFIGS = [
     PageInputConfig(
         key="risk_metrics_timeseries",
-        title="Instrument Risk Metric – 2023 through 2025",
+        title="Instrument Risk Metric (2023 through 2025)",
         dataset_key="instrument_risk_metric",
         required=True,
         description=(
@@ -63,7 +64,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="reference_enrichment",
-        title="Instrument Reference – Geography Enrichment",
+        title="Instrument Reference (Geography Enrichment)",
         dataset_key="instrument_reference",
         required=True,
         description=(
@@ -108,7 +109,7 @@ def _render_readiness(panel_state) -> bool:
     lines: List[str] = []
     if missing_files:
         lines.append(
-            "Missing required file(s): " + ", ".join(f"`{name}`" for name in missing_files)
+            "Missing required file(s): " + ", ".join(f"{name}" for name in missing_files)
         )
     if missing_headers:
         header_lines = [
@@ -122,10 +123,11 @@ def _render_readiness(panel_state) -> bool:
     return False
 
 
-def _parse_dates(df: pd.DataFrame, column: Optional[str]) -> pd.Series:
-    if not column or column not in df.columns:
+def _parse_dates(path: str, column: Optional[str]) -> pd.Series:
+    if not path or not column:
         return pd.Series(dtype="datetime64[ns]")
-    return pd.to_datetime(df[column], errors="coerce")
+    df = load_input_dataframe(path, (column,))
+    return pd.to_datetime(df[column], errors="coerce").dropna()
 
 
 def _validate_timespan(panel_state) -> List[str]:
@@ -136,8 +138,7 @@ def _validate_timespan(panel_state) -> List[str]:
             risk_status.selected_columns.get("reportingDate")
             or risk_status.selected_columns.get("asOfDate")
         )
-        dates = _parse_dates(risk_status.dataframe, date_column)
-        dates = dates.dropna()
+        dates = _parse_dates(risk_status.file_path, date_column)
         if dates.empty:
             errors.append(
                 "Risk metric time series lacks valid reporting/as-of dates. "

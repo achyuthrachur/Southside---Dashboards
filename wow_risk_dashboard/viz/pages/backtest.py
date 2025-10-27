@@ -15,6 +15,7 @@ from wow_risk_dashboard.components import (
     PageInputConfig,
     export_controls,
     render_inputs_panel,
+    load_input_dataframe,
 )
 
 PAGE_KEY = "backtest"
@@ -195,7 +196,11 @@ def _validate_snapshots(panel_state) -> List[str]:
             risk_status.selected_columns.get("reportingDate")
             or risk_status.selected_columns.get("asOfDate")
         )
-        dates = _parse_date_series(risk_status.dataframe, date_column)
+        if date_column and risk_status.file_path:
+            df = load_input_dataframe(risk_status.file_path, (date_column,))
+            dates = _parse_date_series(df, date_column)
+        else:
+            dates = pd.Series(dtype="datetime64[ns]")
         if dates.dropna().empty:
             errors.append(
                 "Risk metric snapshot is missing valid reporting/as-of dates for Q4 2023."
@@ -213,7 +218,11 @@ def _validate_snapshots(panel_state) -> List[str]:
             or chargeoff_status.selected_columns.get("reportingDate")
             or chargeoff_status.selected_columns.get("asOfDate")
         )
-        dates = _parse_date_series(chargeoff_status.dataframe, date_column)
+        if date_column and chargeoff_status.file_path:
+            df = load_input_dataframe(chargeoff_status.file_path, (date_column,))
+            dates = _parse_date_series(df, date_column)
+        else:
+            dates = pd.Series(dtype="datetime64[ns]")
         if dates.dropna().empty:
             errors.append(
                 "Charge-off file is missing recognizable charge-off dates for 2024."
