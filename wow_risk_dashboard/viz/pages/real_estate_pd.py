@@ -248,7 +248,7 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     merged = pd.merge(ref_df, res_df, on="instrumentIdentifier", how="inner", suffixes=("_ref", "_res"))
 
     merged["state"] = _normalize_state(
-        merged.get("borrowerState").fillna(merged.get("collateralState"))
+        merged["borrowerState"].where(merged["borrowerState"].notna(), merged.get("collateralState"))
     )
     merged = merged[merged["state"].notna()]
 
