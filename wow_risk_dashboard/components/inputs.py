@@ -5,7 +5,7 @@ Reusable components for rendering per-page input panels with validation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import pandas as pd
 import streamlit as st
@@ -164,36 +164,64 @@ def render_inputs_panel(
 
             if uploaded is not None:
                 status.uploaded_file = uploaded.name
-                content = uploaded.getvalue()
-                try:
-                    loaded_map = load_uploaded_files({uploaded.name: content})
-                except ValueError as exc:
-                    status.errors.append(str(exc))
-                else:
-                    if config.dataset_key not in loaded_map:
-                        # If multiple files were detected, choose the first for feedback.
-                        detected_keys = ", ".join(loaded_map.keys()) or "none"
-                        status.errors.append(
-                            f"Detected dataset type(s): {detected_keys}. Expected '{config.dataset_key}'."
-                        )
+
+                cache_bucket: Dict[str, Dict[Any, Dict[str, Any]]] = st.session_state.setdefault(
+                    FILE_CACHE_STATE_KEY, {}
+                )
+                page_cache = cache_bucket.setdefault(page_key, {})
+                cache_key = (
+                    config.key,
+                    uploaded.name,
+                    getattr(uploaded, "size", None),
+                )
+
+                cached_entry = page_cache.get(cache_key)
+                if cached_entry:
+                    if "error" in cached_entry:
+                        status.errors.append(cached_entry["error"])
                     else:
-                        record = loaded_map[config.dataset_key][0]
+                        record: LoadedFile = cached_entry["record"]
                         status.loaded_file = record
                         status.dataframe = record.dataframe
                         status.row_count = len(record.dataframe)
                         status.encoding = record.diagnostics.get("encoding")
-
-                        for expectation in config.expectations:
-                            selected, missing = _match_columns(
-                                spec,
-                                record.dataframe.columns.tolist(),
-                                expectation,
+                else:
+                    content = uploaded.getvalue()
+                    try:
+                        loaded_map = load_uploaded_files({uploaded.name: content})
+                    except ValueError as exc:
+                        message = str(exc)
+                        status.errors.append(message)
+                        page_cache[cache_key] = {"error": message}
+                    else:
+                        if config.dataset_key not in loaded_map:
+                            detected_keys = ", ".join(loaded_map.keys()) or "none"
+                            message = (
+                                f"Detected dataset type(s): {detected_keys}. "
+                                f"Expected '{config.dataset_key}'."
                             )
-                            status.selected_columns.update(selected)
-                            if missing and expectation.required:
-                                status.missing_headers.extend(
-                                    f"{expectation.name}: {item}" for item in missing
-                                )
+                            status.errors.append(message)
+                            page_cache[cache_key] = {"error": message}
+                        else:
+                            record = loaded_map[config.dataset_key][0]
+                            status.loaded_file = record
+                            status.dataframe = record.dataframe
+                            status.row_count = len(record.dataframe)
+                            status.encoding = record.diagnostics.get("encoding")
+                            page_cache[cache_key] = {"record": record}
+
+                if status.dataframe is not None:
+                    for expectation in config.expectations:
+                        selected, missing = _match_columns(
+                            spec,
+                            status.dataframe.columns.tolist(),
+                            expectation,
+                        )
+                        status.selected_columns.update(selected)
+                        if missing and expectation.required:
+                            status.missing_headers.extend(
+                                f"{expectation.name}: {item}" for item in missing
+                            )
 
             statuses[config.key] = status
 
@@ -244,3 +272,4 @@ def render_inputs_panel(
     }
 
     return state
+FILE_CACHE_STATE_KEY = "southside_file_cache"
