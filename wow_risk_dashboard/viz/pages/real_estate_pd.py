@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from wow_risk_dashboard.components import (
@@ -124,6 +125,7 @@ INPUT_CONFIGS = [
 class HeatmapData:
     frame: pd.DataFrame
     state_summary: pd.DataFrame
+    cbsa_summary: pd.DataFrame
     metric_columns: Dict[str, str]
     tooltip_fields: List[str]
 
@@ -238,6 +240,27 @@ def _summarize_by_state(frame: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
+def _summarize_by_cbsa(frame: pd.DataFrame) -> pd.DataFrame:
+    summary = (
+        frame.groupby("cbsa_code", dropna=True)
+        .agg(
+            avg_pd=("annualizedPDOneYear", "mean"),
+            avg_lgd=("lgdLifetime", "mean"),
+            exposure=("amortizedCost", "sum"),
+            instrument_count=("instrumentIdentifier", "nunique"),
+        )
+        .reset_index()
+    )
+    metadata = load_cbsa_geojson()["metadata"]
+    summary = summary.merge(metadata, how="left", on="cbsa_code")
+    total_exposure = summary["exposure"].sum()
+    if total_exposure > 0:
+        summary["exposure_share"] = summary["exposure"] / total_exposure
+    else:
+        summary["exposure_share"] = np.nan
+    return summary
+
+
 def _prepare_heatmap_data(panel_state) -> HeatmapData:
     reference_status = panel_state.statuses["reference_current"]
     result_status = panel_state.statuses["result_current"]
@@ -246,6 +269,15 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     res_df = _load_result_dataframe(result_status)
 
     merged = pd.merge(ref_df, res_df, on="instrumentIdentifier", how="inner", suffixes=("_ref", "_res"))
+
+    portfolio_columns = [col for col in merged.columns if col.startswith("portfolioIdentifier")]
+    if portfolio_columns:
+        available = set()
+        for column in portfolio_columns:
+            available.update({str(value).strip() for value in merged[column].dropna() if str(value).strip()})
+        existing = set(st.session_state.get("southside_portfolios", []))
+        combined = sorted(existing.union(available))
+        st.session_state["southside_portfolios"] = combined
 
     merged["state"] = _normalize_state(
         merged["borrowerState"].where(merged["borrowerState"].notna(), merged.get("collateralState"))
@@ -256,6 +288,11 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     merged["propertyGroup"] = merged.apply(_choose_property_group, axis=1)
 
     merged["quarter"] = _derive_quarter(merged)
+    merged["cbsa_code"] = (
+        merged.get("geographyCode", pd.Series(index=merged.index, dtype=str))
+        .astype(str)
+        .str.extract(r"(\\d{5})", expand=False)
+    )
 
     for column in ["annualizedPDOneYear", "lgdLifetime", "amortizedCost"]:
         if column in merged.columns:
@@ -264,6 +301,7 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     merged = merged.dropna(subset=["annualizedPDOneYear", "lgdLifetime", "amortizedCost"], how="all")
 
     state_summary = _summarize_by_state(merged)
+    cbsa_summary = _summarize_by_cbsa(merged)
 
     metric_columns = {
         "Average PD (1Y)": "avg_pd",
@@ -278,19 +316,18 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
         "instrument_count",
     ]
 
-    return HeatmapData(merged, state_summary, metric_columns, tooltip_fields)
+    return HeatmapData(merged, state_summary, cbsa_summary, metric_columns, tooltip_fields)
 
 
 def _apply_filters(data: HeatmapData, filters: Dict[str, str]) -> HeatmapData:
     frame = data.frame.copy()
+
     quarter_filter = filters.get("quarter", "Auto-detect")
     if quarter_filter and quarter_filter != "Auto-detect" and "quarter" in frame.columns:
         cleaned = quarter_filter.replace(" ", "").upper()
         normalized_quarter = cleaned
         if cleaned.startswith("Q") and len(cleaned) >= 5:
-            quarter_number = cleaned[1]
-            year = cleaned[-4:]
-            normalized_quarter = f"{year}Q{quarter_number}"
+            normalized_quarter = f"{cleaned[-4:]}Q{cleaned[1]}"
         mask = frame["quarter"].astype(str) == normalized_quarter
         frame = frame[mask]
 
@@ -298,22 +335,20 @@ def _apply_filters(data: HeatmapData, filters: Dict[str, str]) -> HeatmapData:
     if occupancy_filter and occupancy_filter != "All":
         frame = frame[frame["occupancy"] == occupancy_filter]
 
-    portfolio_filter = filters.get("portfolio", "All portfolios")
-    if portfolio_filter and portfolio_filter != "All portfolios":
-        requested = {p.strip().lower() for p in portfolio_filter.split(",") if p.strip()}
-        if requested:
-            portfolio_column = None
-            for candidate in ["portfolioIdentifier_ref", "portfolioIdentifier_res", "portfolioIdentifier"]:
-                if candidate in frame.columns:
-                    portfolio_column = candidate
-                    break
-            if portfolio_column:
-                frame = frame[
-                    frame[portfolio_column]
-                    .fillna("")
-                    .str.lower()
-                    .isin(requested)
-                ]
+    portfolio_list = filters.get("portfolio_list") or []
+    if portfolio_list:
+        portfolio_column = None
+        for candidate in ["portfolioIdentifier_res", "portfolioIdentifier_ref", "portfolioIdentifier"]:
+            if candidate in frame.columns:
+                portfolio_column = candidate
+                break
+        if portfolio_column:
+            frame = frame[
+                frame[portfolio_column]
+                .fillna("")
+                .str.strip()
+                .isin(portfolio_list)
+            ]
 
     property_filter = filters.get("property_group", "All property groups")
     if property_filter and property_filter != "All property groups":
@@ -326,24 +361,33 @@ def _apply_filters(data: HeatmapData, filters: Dict[str, str]) -> HeatmapData:
                 .isin(requested)
             ]
 
+    if filters.get("only_real_estate"):
+        frame = frame[
+            frame["propertyGroup"]
+            .fillna("")
+            .str.contains("real", case=False, na=False)
+        ]
+
     state_summary = _summarize_by_state(frame)
-    return HeatmapData(frame, state_summary, data.metric_columns, data.tooltip_fields)
+    cbsa_summary = _summarize_by_cbsa(frame)
+
+    return HeatmapData(frame, state_summary, cbsa_summary, data.metric_columns, data.tooltip_fields)
 
 
-def _render_kpis(summary: pd.DataFrame) -> None:
+def _render_kpis(summary: pd.DataFrame, geography_label: str) -> None:
     total_instruments = int(summary["instrument_count"].sum())
     avg_pd = summary["avg_pd"].mean()
     avg_lgd = summary["avg_lgd"].mean()
     total_exposure = summary["exposure"].sum()
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Instruments", f"{total_instruments:,}")
+    col1.metric(f"Instruments ({geography_label})", f"{total_instruments:,}")
     col2.metric("Average PD (1Y)", f"{avg_pd:.2%}" if pd.notna(avg_pd) else "N/A")
     col3.metric("Average LGD", f"{avg_lgd:.2%}" if pd.notna(avg_lgd) else "N/A")
-    col4.metric("Total Amortized Cost", f"")
+    col4.metric("Total Amortized Cost", f"${total_exposure:,.0f}")
 
 
-def _render_heatmap(summary: pd.DataFrame, metric_label: str, metric_column: str) -> None:
+def _render_state_heatmap(summary: pd.DataFrame, metric_label: str, metric_column: str) -> None:
     if summary.empty:
         st.warning("No data available after applying filters.")
         return
@@ -374,27 +418,111 @@ def _render_heatmap(summary: pd.DataFrame, metric_label: str, metric_column: str
             "instrument_count": ":,",
         },
     )
-    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_geos(
+        fitbounds="locations",
+        visible=False,
+        showcoastlines=True,
+        coastlinecolor="#2E2E2E",
+        showlakes=True,
+        lakecolor="#ffffff",
+    )
+    fig.update_traces(marker_line_color="#1c1c1c", marker_line_width=1.0)
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), coloraxis_colorbar=dict(title=metric_label))
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _render_detail_table(summary: pd.DataFrame) -> None:
+@st.cache_resource(show_spinner=False)
+def load_cbsa_geojson() -> Dict:
+    url = "https://raw.githubusercontent.com/tonmcg/US_County_Level_Presidential_Results_12-16/master/geojson/cb_2018_us_cbsa_5m.geojson"
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    geojson = response.json()
+    metadata = pd.DataFrame(
+        [
+            {
+                "cbsa_code": feature["properties"]["GEOID"],
+                "cbsa_name": feature["properties"]["NAME"],
+            }
+            for feature in geojson["features"]
+        ]
+    )
+    return {"geojson": geojson, "metadata": metadata}
+
+
+def _render_cbsa_heatmap(summary: pd.DataFrame, metric_label: str, metric_column: str) -> None:
+    if summary.empty:
+        st.warning("No CBSA-level data available after applying filters.")
+        return
+
+    data = load_cbsa_geojson()
+    geojson = data["geojson"]
+    metadata = data["metadata"]
+
+    summary = summary.merge(metadata, how="left", on="cbsa_code")
+
+    fig = px.choropleth_mapbox(
+        summary,
+        geojson=geojson,
+        locations="cbsa_code",
+        featureidkey="properties.GEOID",
+        color=metric_column,
+        color_continuous_scale={
+            "avg_pd": "PuBu",
+            "avg_lgd": "Reds",
+            "exposure_share": "Viridis",
+        }[metric_column],
+        hover_name="cbsa_name",
+        hover_data={
+            "avg_pd": ":.2%",
+            "avg_lgd": ":.2%",
+            "exposure_share": ":.1%",
+            "exposure": ":,.0f",
+            "instrument_count": ":,",
+        },
+        mapbox_style="carto-positron",
+        zoom=3.35,
+        center={"lat": 38.5, "lon": -96.5},
+        opacity=0.8,
+        labels={
+            "avg_pd": "Avg PD (1Y)",
+            "avg_lgd": "Avg LGD",
+            "exposure_share": "Exposure Share",
+        },
+    )
+    fig.update_traces(marker_line_color="#1c1c1c", marker_line_width=0.2)
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_detail_table(summary: pd.DataFrame, geography: str) -> None:
     display = summary.copy()
     display = display.sort_values("exposure", ascending=False)
     display["avg_pd"] = display["avg_pd"].apply(lambda x: f"{x:.2%}" if pd.notna(x) else "N/A")
     display["avg_lgd"] = display["avg_lgd"].apply(lambda x: f"{x:.2%}" if pd.notna(x) else "N/A")
     display["exposure_share"] = display["exposure_share"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-    display = display.rename(
-        columns={
-            "state": "State",
-            "avg_pd": "Avg PD (1Y)",
-            "avg_lgd": "Avg LGD",
-            "exposure": "Amortized Cost",
-            "exposure_share": "Exposure Share",
-            "instrument_count": "Instruments",
-        }
-    )
+    if geography == "State":
+        display = display.rename(
+            columns={
+                "state": "State",
+                "avg_pd": "Avg PD (1Y)",
+                "avg_lgd": "Avg LGD",
+                "exposure": "Amortized Cost",
+                "exposure_share": "Exposure Share",
+                "instrument_count": "Instruments",
+            }
+        )
+    else:
+        display = display.rename(
+            columns={
+                "cbsa_name": "CBSA",
+                "cbsa_code": "CBSA Code",
+                "avg_pd": "Avg PD (1Y)",
+                "avg_lgd": "Avg LGD",
+                "exposure": "Amortized Cost",
+                "exposure_share": "Exposure Share",
+                "instrument_count": "Instruments",
+            }
+        )
     st.dataframe(display, use_container_width=True, hide_index=True)
 
 
@@ -406,7 +534,15 @@ def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
     base_data = _prepare_heatmap_data(panel_state)
     filtered_data = _apply_filters(base_data, filters)
 
-    _render_kpis(filtered_data.state_summary)
+    geography_level = filters.get("geography", "State")
+    if geography_level == "CBSA":
+        summary = filtered_data.cbsa_summary
+        geography_label = "CBSA"
+    else:
+        summary = filtered_data.state_summary
+        geography_label = "State"
+
+    _render_kpis(summary, geography_label)
 
     metric_label = st.segmented_control(
         "View",
@@ -415,14 +551,18 @@ def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
     )
     metric_column = filtered_data.metric_columns[metric_label]
 
-    if filters.get("geography") == "CBSA":
-        st.info(
-            "CBSA-level mapping will be introduced in a future update. Displaying state-level aggregates instead."
-        )
+    if geography_level == "CBSA":
+        _render_cbsa_heatmap(summary, metric_label, metric_column)
+        st.markdown("### CBSA Detail")
+        _render_detail_table(summary, "CBSA")
+    else:
+        _render_state_heatmap(summary, metric_label, metric_column)
+        st.markdown("### State Detail")
+        _render_detail_table(summary, "State")
 
-    _render_heatmap(filtered_data.state_summary, metric_label, metric_column)
-
-    st.markdown("### State Detail")
-    _render_detail_table(filtered_data.state_summary)
-
-    export_controls("real_estate_pd")
+    export_controls(
+        "real_estate_pd",
+        dataframes={
+            f"{geography_label.lower()}_summary": summary,
+        },
+    )
