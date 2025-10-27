@@ -19,6 +19,7 @@ from .schemas import DATASET_SPECS, AliasMap, DatasetSpec
 logger = logging.getLogger(__name__)
 
 _NORMALIZE_PATTERN = re.compile(r"[^a-z0-9]")
+ENCODING_CANDIDATES: Tuple[str, ...] = ("utf-8", "utf-8-sig", "cp1252", "latin1")
 
 
 def _normalize_token(value: str) -> str:
@@ -51,6 +52,47 @@ def _match_alias(alias_list: Iterable[str], header_map: Dict[str, List[str]]) ->
         if token in header_map:
             return header_map[token][0]
     return None
+
+
+def _read_csv_with_fallback(
+    content: bytes,
+    *,
+    encoding_hint: Optional[str] = None,
+    **kwargs: Any,
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Attempt to read CSV bytes using a set of candidate encodings.
+
+    Returns the parsed DataFrame and encoding that succeeded.
+    """
+    attempted: List[str] = []
+    candidates: List[str] = []
+    if encoding_hint:
+        candidates.append(encoding_hint)
+    candidates.extend(
+        encoding for encoding in ENCODING_CANDIDATES if encoding not in candidates
+    )
+
+    last_error: Optional[Exception] = None
+    for encoding in candidates:
+        attempted.append(encoding)
+        buffer = BytesIO(content)
+        try:
+            df = pd.read_csv(buffer, encoding=encoding, **kwargs)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            logger.debug(
+                "Failed to decode CSV using encoding=%s (kwargs=%s)", encoding, kwargs
+            )
+            continue
+        except Exception:
+            # Propagate non-decoding errors directly
+            raise
+        return df, encoding
+
+    attempted_str = ", ".join(attempted)
+    message = f"Unable to decode CSV after trying encodings: {attempted_str or 'none'}"
+    raise ValueError(message) from last_error
 
 
 @dataclass
@@ -188,17 +230,22 @@ def load_uploaded_files(files: Dict[str, bytes]) -> Dict[str, List[LoadedFile]]:
             logger.warning("File %s is empty; skipping.", file_name)
             continue
 
-        preview_buffer = BytesIO(content)
         try:
-            header_frame = pd.read_csv(preview_buffer, nrows=0)
+            header_frame, detected_encoding = _read_csv_with_fallback(
+                content,
+                nrows=0,
+            )
         except Exception as exc:  # pragma: no cover - propagating context
             raise ValueError(f"Unable to read CSV headers for file '{file_name}': {exc}") from exc
 
         dataset_key, diagnostics = detect_file_profile(file_name, header_frame.columns)
 
-        preview_buffer.seek(0)
         try:
-            df = pd.read_csv(preview_buffer, **READ_CSV_KWARGS)
+            df, data_encoding = _read_csv_with_fallback(
+                content,
+                encoding_hint=detected_encoding,
+                **READ_CSV_KWARGS,
+            )
         except Exception as exc:  # pragma: no cover - propagating context
             raise ValueError(f"Unable to load CSV for file '{file_name}': {exc}") from exc
 
@@ -207,6 +254,7 @@ def load_uploaded_files(files: Dict[str, bytes]) -> Dict[str, List[LoadedFile]]:
             {
                 "row_count": len(df),
                 "columns": list(df.columns),
+                "encoding": data_encoding,
             }
         )
 
