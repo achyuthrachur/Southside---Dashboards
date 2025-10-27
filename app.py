@@ -49,7 +49,7 @@ def _handle_file_uploads() -> Dict[str, List[LoadedFile]]:
         with st.expander(f"{spec_name} ({len(records)} file{'s' if len(records) != 1 else ''})", expanded=False):
             for record in records:
                 diagnostics = record.diagnostics
-                st.markdown(f"**{record.file_name}** — {diagnostics.get('row_count', 0)} rows")
+                st.markdown(f"**{record.file_name}** - {diagnostics.get('row_count', 0)} rows")
                 if diagnostics.get("matched_required"):
                     st.write("Matched required headers:", diagnostics["matched_required"])
                 if diagnostics.get("matched_optional"):
