@@ -17,4 +17,8 @@ def export_controls(
     """
     Render export buttons for CSV/PNG downloads.
     """
-    st.info("Export controls will be available in a future iteration.")
+    with st.expander("Exports", expanded=False):
+        st.write(
+            "Download-ready CSV and PNG outputs will appear here once the "
+            "Southside Bank analytics are connected to processed data."
+        )

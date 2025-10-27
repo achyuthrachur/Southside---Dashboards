@@ -1,5 +1,5 @@
 """
-WOW Risk Dashboard package initialization.
+Southside Bank Risk Dashboard package initialization.
 
 This package contains modules for data ingestion, geographic enrichment,
 transformations, visualizations, and Streamlit page orchestration.

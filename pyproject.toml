@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "wow-risk-dashboard"
 version = "0.1.0"
-description = "Streamlit dashboard for WOW Risk analytics."
+description = "Streamlit dashboard for Southside Bank Risk analytics."
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 packages = [{include = "wow_risk_dashboard"}]

@@ -22,7 +22,7 @@ _NORMALIZE_PATTERN = re.compile(r"[^a-z0-9]")
 ENCODING_CANDIDATES: Tuple[str, ...] = ("utf-8", "utf-8-sig", "cp1252", "latin1")
 
 
-def _normalize_token(value: str) -> str:
+def normalize_token(value: str) -> str:
     """Return a lowercase token stripped of whitespace and punctuation."""
     return _NORMALIZE_PATTERN.sub("", value.lower())
 
@@ -41,14 +41,14 @@ def normalize_headers(columns: Iterable[str]) -> Dict[str, List[str]]:
         trimmed = column.strip()
         if not trimmed:
             continue
-        normalized[_normalize_token(trimmed)].append(trimmed)
+        normalized[normalize_token(trimmed)].append(trimmed)
     return dict(normalized)
 
 
 def _match_alias(alias_list: Iterable[str], header_map: Dict[str, List[str]]) -> Optional[str]:
     """Return the first header that matches any alias candidate."""
     for alias in alias_list:
-        token = _normalize_token(alias)
+        token = normalize_token(alias)
         if token in header_map:
             return header_map[token][0]
     return None

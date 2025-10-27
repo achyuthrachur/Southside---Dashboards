@@ -1,5 +1,5 @@
 """
-Dataset schema definitions and alias registries for WOW Risk Dashboard ingestion.
+Dataset schema definitions and alias registries for Southside Bank Risk Dashboard ingestion.
 """
 
 from __future__ import annotations

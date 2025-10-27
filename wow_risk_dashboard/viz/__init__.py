@@ -1,5 +1,5 @@
 """
-Visualization builders and Streamlit page layouts for the WOW Risk Dashboard.
+Visualization builders and Streamlit page layouts for the Southside Bank Risk Dashboard.
 """
 
 from .pages.real_estate_pd import render_real_estate_pd_page
