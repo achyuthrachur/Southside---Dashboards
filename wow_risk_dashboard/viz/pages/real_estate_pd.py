@@ -4,7 +4,9 @@ Interactive Real Estate risk heatmap for Southside Bank.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -12,6 +14,9 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+
+CBSA_GEOJSON_PATH = Path("data") / "cbsa.geojson"
+CBSA_METADATA_PATH = Path("data") / "cbsa_metadata.csv"
 
 from wow_risk_dashboard.components import (
     HeaderExpectation,
@@ -252,7 +257,10 @@ def _summarize_by_cbsa(frame: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     metadata = load_cbsa_geojson()["metadata"]
-    summary = summary.merge(metadata, how="left", on="cbsa_code")
+    if not metadata.empty:
+        summary = summary.merge(metadata, how="left", on="cbsa_code")
+    else:
+        summary["cbsa_name"] = summary["cbsa_code"]
     total_exposure = summary["exposure"].sum()
     if total_exposure > 0:
         summary["exposure_share"] = summary["exposure"] / total_exposure
@@ -432,18 +440,47 @@ def _render_state_heatmap(summary: pd.DataFrame, metric_label: str, metric_colum
 
 
 @st.cache_resource(show_spinner=False)
-def load_cbsa_geojson() -> Dict:
-    url = "https://raw.githubusercontent.com/tonmcg/US_County_Level_Presidential_Results_12-16/master/geojson/cb_2018_us_cbsa_5m.geojson"
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+def load_cbsa_geojson() -> Dict[str, Optional[object]]:
+    """
+    Retrieve CBSA boundaries and metadata. Prefer local resources to avoid network
+    calls, but fall back to remote retrieval when available.
+    """
+    if CBSA_GEOJSON_PATH.exists():
+        geojson_data = json.load(CBSA_GEOJSON_PATH.open())
+        if CBSA_METADATA_PATH.exists():
+            metadata = pd.read_csv(CBSA_METADATA_PATH, dtype=str)
+        else:
+            metadata = pd.DataFrame(
+                [
+                    {
+                        "cbsa_code": feature["properties"]["GEOID"],
+                        "cbsa_name": feature["properties"]["NAME"],
+                    }
+                    for feature in geojson_data.get("features", [])
+                ]
+            )
+        return {"geojson": geojson_data, "metadata": metadata}
+
+    url = (
+        "https://raw.githubusercontent.com/tonmcg/US_County_Level_Presidential_Results_12-16/"
+        "master/geojson/cb_2018_us_cbsa_5m.geojson"
+    )
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        st.warning(
+            "Unable to download CBSA boundaries — displaying state view only. "
+            "Provide `data/cbsa.geojson` (and optional `data/cbsa_metadata.csv`) "
+            "to enable CBSA heatmaps."
+        )
+        return {"geojson": None, "metadata": pd.DataFrame()}
+
     geojson = response.json()
     metadata = pd.DataFrame(
         [
-            {
-                "cbsa_code": feature["properties"]["GEOID"],
-                "cbsa_name": feature["properties"]["NAME"],
-            }
-            for feature in geojson["features"]
+            {"cbsa_code": feature["properties"]["GEOID"], "cbsa_name": feature["properties"]["NAME"]}
+            for feature in geojson.get("features", [])
         ]
     )
     return {"geojson": geojson, "metadata": metadata}
@@ -458,7 +495,18 @@ def _render_cbsa_heatmap(summary: pd.DataFrame, metric_label: str, metric_column
     geojson = data["geojson"]
     metadata = data["metadata"]
 
-    summary = summary.merge(metadata, how="left", on="cbsa_code")
+    if geojson is None:
+        st.warning(
+            "CBSA map unavailable because boundary files could not be loaded. "
+            "Upload `data/cbsa.geojson` locally to enable the CBSA view."
+        )
+        _render_state_heatmap(summary, metric_label, metric_column)
+        return
+
+    if not metadata.empty:
+        summary = summary.merge(metadata, how="left", on="cbsa_code")
+    else:
+        summary["cbsa_name"] = summary["cbsa_code"]
 
     fig = px.choropleth_mapbox(
         summary,
