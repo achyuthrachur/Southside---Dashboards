@@ -15,8 +15,12 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-CBSA_GEOJSON_PATH = Path("data") / "cbsa.geojson"
-CBSA_METADATA_PATH = Path("data") / "cbsa_metadata.csv"
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = PACKAGE_ROOT.parent
+CBSA_GEOJSON_PATH = PROJECT_ROOT / "data" / "cbsa.geojson"
+CBSA_METADATA_PATH = PROJECT_ROOT / "data" / "cbsa_metadata.csv"
+CBSA_FEATURE_FOLDER = PROJECT_ROOT / "cbsa_json_per_cbsa"
+CBSA_SHAPEFILE_PATH = PROJECT_ROOT / "tl_2023_us_cbsa" / "tl_2023_us_cbsa.shp"
 
 from wow_risk_dashboard.components import (
     HeaderExpectation,
@@ -461,6 +465,82 @@ def load_cbsa_geojson() -> Dict[str, Optional[object]]:
             )
         return {"geojson": geojson_data, "metadata": metadata}
 
+    if CBSA_FEATURE_FOLDER.exists():
+        features: List[Dict[str, object]] = []
+        rows: List[Dict[str, str]] = []
+        for path in sorted(CBSA_FEATURE_FOLDER.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                continue
+            geometry = data.get("geometry")
+            if not geometry:
+                continue
+            properties = {
+                key: value
+                for key, value in data.items()
+                if key not in {"geometry", "bbox"}
+            }
+            cbsa_code = properties.get("cbsa_code") or properties.get("cbsa")
+            if not cbsa_code:
+                continue
+            cbsa_name = (
+                properties.get("cbsa_name")
+                or properties.get("cbsa_title")
+                or cbsa_code
+            )
+            properties.setdefault("cbsa_code", cbsa_code)
+            properties.setdefault("cbsa_name", cbsa_name)
+            properties.setdefault("GEOID", cbsa_code)
+            properties.setdefault("NAME", cbsa_name)
+            rows.append(
+                {
+                    "cbsa_code": cbsa_code,
+                    "cbsa_name": cbsa_name,
+                }
+            )
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": properties,
+                }
+            )
+
+        if features:
+            metadata = (
+                pd.DataFrame(rows)
+                .dropna(subset=["cbsa_code"])
+                .drop_duplicates(subset=["cbsa_code"])
+            )
+            metadata["cbsa_name"] = metadata["cbsa_name"].fillna(
+                metadata["cbsa_code"]
+            )
+            return {
+                "geojson": {"type": "FeatureCollection", "features": features},
+                "metadata": metadata,
+            }
+
+    if CBSA_SHAPEFILE_PATH.exists():
+        try:
+            import geopandas as gpd  # type: ignore import-not-found
+
+            geodf = gpd.read_file(CBSA_SHAPEFILE_PATH)[["GEOID", "NAME", "geometry"]]
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            st.warning(
+                "Unable to read local CBSA shapefile; falling back to state view. "
+                f"Details: {exc}"
+            )
+        else:
+            metadata = (
+                geodf[["GEOID", "NAME"]]
+                .rename(columns={"GEOID": "cbsa_code", "NAME": "cbsa_name"})
+                .dropna(subset=["cbsa_code"])
+                .drop_duplicates(subset=["cbsa_code"])
+            )
+            geojson_data = json.loads(geodf.to_json())
+            return {"geojson": geojson_data, "metadata": metadata}
+
     url = (
         "https://raw.githubusercontent.com/tonmcg/US_County_Level_Presidential_Results_12-16/"
         "master/geojson/cb_2018_us_cbsa_5m.geojson"
@@ -470,7 +550,7 @@ def load_cbsa_geojson() -> Dict[str, Optional[object]]:
         response.raise_for_status()
     except requests.RequestException:
         st.warning(
-            "Unable to download CBSA boundaries — displaying state view only. "
+            "Unable to download CBSA boundaries; displaying state view only. "
             "Provide `data/cbsa.geojson` (and optional `data/cbsa_metadata.csv`) "
             "to enable CBSA heatmaps."
         )
