@@ -214,7 +214,11 @@ READ_CSV_KWARGS: Dict[str, Any] = {
 }
 
 
-def load_uploaded_files(files: Dict[str, bytes]) -> Dict[str, List[LoadedFile]]:
+def load_uploaded_files(
+    files: Dict[str, bytes],
+    *,
+    max_rows: Optional[int] = None,
+) -> Dict[str, List[LoadedFile]]:
     """
     Load uploaded CSV files into pandas DataFrames keyed by dataset type.
 
@@ -222,6 +226,9 @@ def load_uploaded_files(files: Dict[str, bytes]) -> Dict[str, List[LoadedFile]]:
     ----------
     files:
         Mapping of filename to raw bytes from Streamlit's uploader.
+    max_rows:
+        Optional limit on the number of rows to read from each file. Use 0 to
+        inspect only the headers without loading the body of the CSV.
     """
     loaded: Dict[str, List[LoadedFile]] = {}
 
@@ -241,10 +248,14 @@ def load_uploaded_files(files: Dict[str, bytes]) -> Dict[str, List[LoadedFile]]:
         dataset_key, diagnostics = detect_file_profile(file_name, header_frame.columns)
 
         try:
+            read_kwargs = dict(READ_CSV_KWARGS)
+            if max_rows is not None:
+                read_kwargs["nrows"] = max_rows
+
             df, data_encoding = _read_csv_with_fallback(
                 content,
                 encoding_hint=detected_encoding,
-                **READ_CSV_KWARGS,
+                **read_kwargs,
             )
         except Exception as exc:  # pragma: no cover - propagating context
             raise ValueError(f"Unable to load CSV for file '{file_name}': {exc}") from exc
@@ -252,7 +263,7 @@ def load_uploaded_files(files: Dict[str, bytes]) -> Dict[str, List[LoadedFile]]:
         df.columns = [col.strip() if isinstance(col, str) else col for col in df.columns]
         diagnostics.update(
             {
-                "row_count": len(df),
+                "row_count": None if max_rows is not None else len(df),
                 "columns": list(df.columns),
                 "encoding": data_encoding,
             }

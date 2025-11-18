@@ -187,7 +187,10 @@ def render_inputs_panel(
                 status.file_path = str(cached_path)
 
                 try:
-                    loaded = load_uploaded_files({uploaded.name: content})
+                    loaded = load_uploaded_files(
+                        {uploaded.name: content},
+                        max_rows=0,
+                    )
                 except ValueError as exc:
                     status.errors.append(str(exc))
                 else:
