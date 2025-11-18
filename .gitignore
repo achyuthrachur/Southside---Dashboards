@@ -9,7 +9,9 @@ __pycache__/
 .streamlit/secrets.toml
 *.pyc
 logs/
-data/
+data/*
+!data/cbsa.geojson
+!data/cbsa_metadata.csv
 processed/
 cache/
 dist/

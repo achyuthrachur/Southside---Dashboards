@@ -22,7 +22,7 @@ PAGE_KEY = "rating_migration"
 INPUT_CONFIGS = [
     PageInputConfig(
         key="result_q2_2023",
-        title="Instrument Result – Q2 2023",
+        title="Instrument Result - Q2 2023",
         dataset_key="instrument_result",
         required=True,
         description="Starting-point classifications for the Q2 2023 cohort.",
@@ -53,7 +53,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="result_q2_2025",
-        title="Instrument Result – Q2 2025",
+        title="Instrument Result - Q2 2025",
         dataset_key="instrument_result",
         required=True,
         description="End-point classifications for the Q2 2025 cohort.",
@@ -84,7 +84,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="risk_q2_2023",
-        title="Instrument Risk Metric – Q2 2023 (optional)",
+        title="Instrument Risk Metric - Q2 2023 (optional)",
         dataset_key="instrument_risk_metric",
         required=False,
         description="Fallback PD measures used when ratings are missing in Q2 2023.",
@@ -116,7 +116,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="risk_q2_2025",
-        title="Instrument Risk Metric – Q2 2025 (optional)",
+        title="Instrument Risk Metric - Q2 2025 (optional)",
         dataset_key="instrument_risk_metric",
         required=False,
         description="Fallback PD measures used when ratings are missing in Q2 2025.",

@@ -26,7 +26,7 @@ SNAPSHOT_CUTOFF = datetime(2023, 12, 31)
 INPUT_CONFIGS = [
     PageInputConfig(
         key="risk_metric_snapshot",
-        title="Instrument Risk Metric – Q4 2023 Snapshot",
+        title="Instrument Risk Metric - Q4 2023 Snapshot",
         dataset_key="instrument_risk_metric",
         required=True,
         description=(
@@ -70,7 +70,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="result_snapshot",
-        title="Instrument Result – Q4 2023 (optional)",
+        title="Instrument Result - Q4 2023 (optional)",
         dataset_key="instrument_result",
         required=False,
         description="Supplies IFRS EAD amounts when not available in risk metrics.",
@@ -96,7 +96,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="cashflow_2024",
-        title="Instrument Cash Flow – 2024 (optional)",
+        title="Instrument Cash Flow - 2024 (optional)",
         dataset_key="instrument_cashflow",
         required=False,
         description="Used to infer realized defaults when charge-off files are unavailable.",
@@ -131,7 +131,7 @@ INPUT_CONFIGS = [
     ),
     PageInputConfig(
         key="chargeoff_2024",
-        title="Charge-off Events – 2024 (preferred)",
+        title="Charge-off Events - 2024 (preferred)",
         dataset_key="chargeoff",
         required=False,
         description="Primary source for realized defaults and charge-off timing in 2024.",

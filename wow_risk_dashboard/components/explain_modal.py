@@ -39,13 +39,13 @@ def render_explain_modal(page_titles: Dict[str, str]) -> None:
                 row_count = info.get("row_count")
 
                 st.markdown(
-                    f"- `{dataset_key}` → **{file_name or 'unavailable'}** "
+                    f"- `{dataset_key}` -> **{file_name or 'unavailable'}** "
                     f"({row_count or 0:,} rows)"
                 )
                 if selected:
                     st.write(
                         "  - Columns selected:",
-                        ", ".join(f"{canonical} ⇢ {actual}" for canonical, actual in selected.items()),
+                        ", ".join(f"{canonical} -> {actual}" for canonical, actual in selected.items()),
                     )
                 if missing:
                     st.write(

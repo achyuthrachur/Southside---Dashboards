@@ -160,7 +160,7 @@ def render_inputs_panel(
 
         with st.container():
             label = "Required" if config.required else "Optional"
-            st.markdown(f"**{config.title}** · _{label}_")
+            st.markdown(f"**{config.title}** - _{label}_")
             if config.description:
                 st.caption(config.description)
 
@@ -227,12 +227,12 @@ def render_inputs_panel(
                 for error in status.errors:
                     st.error(error)
             elif status.is_loaded:
-                details = [f"✅ Loaded — {status.row_count:,} rows"]
+                details = [f"[OK] Loaded - {status.row_count:,} rows"]
                 if status.encoding:
                     details.append(f"encoding: {status.encoding}")
                 st.success("; ".join(details))
             else:
-                icon = "⛔" if config.required else "ℹ️"
+                icon = "[REQUIRED]" if config.required else "[OPTIONAL]"
                 descriptor = "Missing (required)" if config.required else "Missing (optional)"
                 st.info(f"{icon} {descriptor}")
 
@@ -243,8 +243,8 @@ def render_inputs_panel(
                 summary_lines = []
                 for expectation in config.expectations:
                     requirement = "Required" if expectation.required else "Optional"
-                    priority = " → ".join(expectation.candidates)
-                    note = f" — {expectation.note}" if expectation.note else ""
+                    priority = " -> ".join(expectation.candidates)
+                    note = f" - {expectation.note}" if expectation.note else ""
                     summary_lines.append(f"- `{expectation.name}` ({requirement}): {priority}{note}")
                 st.caption("\n".join(summary_lines))
 
