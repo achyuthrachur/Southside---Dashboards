@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -90,7 +90,20 @@ STATE_ABBREVIATIONS = {
     "AMERICAN SAMOA": "AS",
     "US VIRGIN ISLANDS": "VI",
 }
-STATE_ABBREVIATION_SET = set(STATE_ABBREVIATIONS.values())
+STATE_ABBREVIATION_SET: Set[str] = set(STATE_ABBREVIATIONS.values())
+ESSENTIAL_COLUMNS: Set[str] = {
+    "instrumentIdentifier",
+    "geographyCode",
+    "borrowerState",
+    "collateralState",
+    "occupancyStatus",
+    "propertyStatus",
+    "loanPropertyGroupIdentifier",
+    "assetClass",
+    "annualizedPDOneYear",
+    "lgdLifetime",
+    "amortizedCost",
+}
 
 PAGE_KEY = "real_estate_pd"
 
@@ -308,6 +321,19 @@ def _derive_quarter(df: pd.DataFrame) -> pd.Series:
     return quarter
 
 
+def _prune_columns(df: pd.DataFrame) -> pd.DataFrame:
+    keep: List[str] = []
+    for column in df.columns:
+        if (
+            column in ESSENTIAL_COLUMNS
+            or column.startswith("portfolioIdentifier")
+            or column.startswith("reportingDate")
+            or column.startswith("asOfDate")
+        ):
+            keep.append(column)
+    return df.loc[:, keep]
+
+
 def _summarize_by_state(frame: pd.DataFrame) -> pd.DataFrame:
     summary = (
         frame.groupby("state", dropna=True)
@@ -359,6 +385,7 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     res_df = _load_result_dataframe(result_status)
 
     merged = pd.merge(ref_df, res_df, on="instrumentIdentifier", how="inner", suffixes=("_ref", "_res"))
+    merged = _prune_columns(merged).copy()
 
     portfolio_columns = [col for col in merged.columns if col.startswith("portfolioIdentifier")]
     if portfolio_columns:
