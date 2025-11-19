@@ -755,6 +755,37 @@ def _render_detail_table(summary: pd.DataFrame, geography: str) -> None:
     st.dataframe(display, use_container_width=True, hide_index=True)
 
 
+def _select_metric_label(metric_columns: Dict[str, str]) -> str:
+    options = list(metric_columns.keys())
+    default = options[0] if options else ""
+    segmented = getattr(st, "segmented_control", None)
+    if segmented:
+        try:
+            return segmented(
+                "View",
+                options=options,
+                default=default,
+                key=f"{PAGE_KEY}_metric_selector_segmented",
+            )
+        except TypeError:
+            st.warning(
+                "Segmented control unavailable in this Streamlit environment. "
+                "Falling back to radio buttons."
+            )
+        except Exception:
+            st.warning(
+                "Segmented control encountered an error. Using radio buttons instead."
+            )
+
+    return st.radio(
+        "View",
+        options=options,
+        index=0,
+        horizontal=True,
+        key=f"{PAGE_KEY}_metric_selector_radio",
+    )
+
+
 def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
     panel_state = render_inputs_panel(PAGE_KEY, INPUT_CONFIGS)
     if not _render_readiness(panel_state):
@@ -773,11 +804,7 @@ def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
 
     _render_kpis(summary, geography_label)
 
-    metric_label = st.segmented_control(
-        "View",
-        options=list(filtered_data.metric_columns.keys()),
-        default="Average PD (1Y)",
-    )
+    metric_label = _select_metric_label(filtered_data.metric_columns)
     metric_column = filtered_data.metric_columns[metric_label]
 
     if geography_level == "CBSA":
