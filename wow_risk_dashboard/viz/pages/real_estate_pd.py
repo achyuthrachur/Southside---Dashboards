@@ -325,9 +325,10 @@ def _derive_quarter(df: pd.DataFrame) -> pd.Series:
 def _prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     keep: List[str] = []
     for column in df.columns:
+        if column.startswith("portfolioIdentifier") and column != "portfolioIdentifier":
+            continue
         if (
             column in ESSENTIAL_COLUMNS
-            or column.startswith("portfolioIdentifier")
             or column.startswith("reportingDate")
             or column.startswith("asOfDate")
         ):
@@ -389,13 +390,19 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
 
     portfolio_columns = [col for col in merged.columns if col.startswith("portfolioIdentifier")]
     if portfolio_columns:
-        available = set()
-        for column in portfolio_columns:
-            available.update({str(value).strip() for value in merged[column].dropna() if str(value).strip()})
+        combined_series = merged[portfolio_columns[0]].copy()
+        for column in portfolio_columns[1:]:
+            combined_series = combined_series.fillna(merged[column])
+        merged["portfolioIdentifier"] = combined_series
+
+        available = {
+            str(value).strip()
+            for value in merged["portfolioIdentifier"].dropna()
+            if str(value).strip()
+        }
         existing = set(st.session_state.get("southside_portfolios", []))
         combined = sorted(existing.union(available))
         st.session_state["southside_portfolios"] = combined
-
     merged = _prune_columns(merged).copy()
 
     merged["state"] = _normalize_state(
@@ -455,19 +462,13 @@ def _apply_filters(data: HeatmapData, filters: Dict[str, str]) -> HeatmapData:
         frame = frame[frame["occupancy"] == occupancy_filter]
 
     portfolio_list = filters.get("portfolio_list") or []
-    if portfolio_list:
-        portfolio_column = None
-        for candidate in ["portfolioIdentifier_res", "portfolioIdentifier_ref", "portfolioIdentifier"]:
-            if candidate in frame.columns:
-                portfolio_column = candidate
-                break
-        if portfolio_column:
-            frame = frame[
-                frame[portfolio_column]
-                .fillna("")
-                .str.strip()
-                .isin(portfolio_list)
-            ]
+    if portfolio_list and "portfolioIdentifier" in frame.columns:
+        frame = frame[
+            frame["portfolioIdentifier"]
+            .fillna("")
+            .str.strip()
+            .isin(portfolio_list)
+        ]
 
     property_filter = filters.get("property_group", "All property groups")
     if property_filter and property_filter != "All property groups":
