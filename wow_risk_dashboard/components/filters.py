@@ -60,11 +60,6 @@ def render_global_filters() -> Dict[str, object]:
         value="All property groups",
         help="Enter property group identifiers to focus analyses (optional).",
     )
-    only_real_estate = st.sidebar.checkbox(
-        "Only real estate exposures",
-        value=True,
-        help="Restrict analytics to real estate portfolios when enabled.",
-    )
 
     if available_portfolios and portfolio_selection:
         portfolio_label = ",".join(portfolio_selection)
@@ -78,5 +73,4 @@ def render_global_filters() -> Dict[str, object]:
         "geography": geography,
         "occupancy": occupancy,
         "property_group": property_group,
-        "only_real_estate": only_real_estate,
     }

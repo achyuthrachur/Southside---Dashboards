@@ -5,6 +5,7 @@ Interactive Real Estate risk heatmap for Southside Bank.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -29,6 +30,67 @@ from wow_risk_dashboard.components import (
     load_input_dataframe,
     render_inputs_panel,
 )
+
+STATE_ABBREVIATIONS = {
+    "ALABAMA": "AL",
+    "ALASKA": "AK",
+    "ARIZONA": "AZ",
+    "ARKANSAS": "AR",
+    "CALIFORNIA": "CA",
+    "COLORADO": "CO",
+    "CONNECTICUT": "CT",
+    "DELAWARE": "DE",
+    "DISTRICT OF COLUMBIA": "DC",
+    "WASHINGTON DC": "DC",
+    "FLORIDA": "FL",
+    "GEORGIA": "GA",
+    "HAWAII": "HI",
+    "IDAHO": "ID",
+    "ILLINOIS": "IL",
+    "INDIANA": "IN",
+    "IOWA": "IA",
+    "KANSAS": "KS",
+    "KENTUCKY": "KY",
+    "LOUISIANA": "LA",
+    "MAINE": "ME",
+    "MARYLAND": "MD",
+    "MASSACHUSETTS": "MA",
+    "MICHIGAN": "MI",
+    "MINNESOTA": "MN",
+    "MISSISSIPPI": "MS",
+    "MISSOURI": "MO",
+    "MONTANA": "MT",
+    "NEBRASKA": "NE",
+    "NEVADA": "NV",
+    "NEW HAMPSHIRE": "NH",
+    "NEW JERSEY": "NJ",
+    "NEW MEXICO": "NM",
+    "NEW YORK": "NY",
+    "NORTH CAROLINA": "NC",
+    "NORTH DAKOTA": "ND",
+    "OHIO": "OH",
+    "OKLAHOMA": "OK",
+    "OREGON": "OR",
+    "PENNSYLVANIA": "PA",
+    "RHODE ISLAND": "RI",
+    "SOUTH CAROLINA": "SC",
+    "SOUTH DAKOTA": "SD",
+    "TENNESSEE": "TN",
+    "TEXAS": "TX",
+    "UTAH": "UT",
+    "VERMONT": "VT",
+    "VIRGINIA": "VA",
+    "WASHINGTON": "WA",
+    "WEST VIRGINIA": "WV",
+    "WISCONSIN": "WI",
+    "WYOMING": "WY",
+    "PUERTO RICO": "PR",
+    "GUAM": "GU",
+    "NORTHERN MARIANA ISLANDS": "MP",
+    "AMERICAN SAMOA": "AS",
+    "US VIRGIN ISLANDS": "VI",
+}
+STATE_ABBREVIATION_SET = set(STATE_ABBREVIATIONS.values())
 
 PAGE_KEY = "real_estate_pd"
 
@@ -181,12 +243,28 @@ def _load_result_dataframe(status) -> pd.DataFrame:
 
 
 def _normalize_state(series: pd.Series) -> pd.Series:
-    return (
-        series.astype(str)
-        .str.upper()
-        .str.strip()
-        .str.extract(r"([A-Z]{2})", expand=False)
-    )
+    cleaned = series.fillna("").astype(str).str.upper().str.strip()
+
+    def normalize(value: str) -> Optional[str]:
+        if not value or value in {"NAN", "NONE"}:
+            return None
+        if len(value) == 2 and value in STATE_ABBREVIATION_SET:
+            return value
+
+        # Try to detect "(TX)" style suffixes.
+        match = re.search(r"\b([A-Z]{2})\b", value)
+        if match:
+            candidate = match.group(1)
+            if candidate in STATE_ABBREVIATION_SET:
+                return candidate
+
+        # Fall back to full-name mapping.
+        if value in STATE_ABBREVIATIONS:
+            return STATE_ABBREVIATIONS[value]
+        return None
+
+    normalized = cleaned.map(normalize)
+    return normalized
 
 
 def _map_occupancy(raw: pd.Series) -> pd.Series:
@@ -372,13 +450,6 @@ def _apply_filters(data: HeatmapData, filters: Dict[str, str]) -> HeatmapData:
                 .str.lower()
                 .isin(requested)
             ]
-
-    if filters.get("only_real_estate"):
-        frame = frame[
-            frame["propertyGroup"]
-            .fillna("")
-            .str.contains("real", case=False, na=False)
-        ]
 
     state_summary = _summarize_by_state(frame)
     cbsa_summary = _summarize_by_cbsa(frame)
