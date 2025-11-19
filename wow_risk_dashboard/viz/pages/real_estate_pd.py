@@ -93,6 +93,7 @@ STATE_ABBREVIATIONS = {
 STATE_ABBREVIATION_SET: Set[str] = set(STATE_ABBREVIATIONS.values())
 ESSENTIAL_COLUMNS: Set[str] = {
     "instrumentIdentifier",
+    "portfolioIdentifier",
     "geographyCode",
     "borrowerState",
     "collateralState",
@@ -385,7 +386,6 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     res_df = _load_result_dataframe(result_status)
 
     merged = pd.merge(ref_df, res_df, on="instrumentIdentifier", how="inner", suffixes=("_ref", "_res"))
-    merged = _prune_columns(merged).copy()
 
     portfolio_columns = [col for col in merged.columns if col.startswith("portfolioIdentifier")]
     if portfolio_columns:
@@ -395,6 +395,8 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
         existing = set(st.session_state.get("southside_portfolios", []))
         combined = sorted(existing.union(available))
         st.session_state["southside_portfolios"] = combined
+
+    merged = _prune_columns(merged).copy()
 
     merged["state"] = _normalize_state(
         merged["borrowerState"].where(merged["borrowerState"].notna(), merged.get("collateralState"))
