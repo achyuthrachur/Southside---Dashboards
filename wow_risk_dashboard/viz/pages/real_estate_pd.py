@@ -377,6 +377,8 @@ def _prune_columns(df: pd.DataFrame) -> pd.DataFrame:
             column in ESSENTIAL_COLUMNS
             or column.startswith("reportingDate")
             or column.startswith("asOfDate")
+            or column in CBSA_COLUMN_CANDIDATES
+            or any(column.startswith(f"{field}_") for field in CBSA_COLUMN_CANDIDATES)
         ):
             keep.append(column)
     return df.loc[:, keep]
