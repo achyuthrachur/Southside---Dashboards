@@ -260,7 +260,7 @@ def _get_selected_column(status, canonical: str) -> Optional[str]:
 
 def _load_reference_dataframe(status) -> pd.DataFrame:
     columns = set(status.selected_columns.values())
-    df = load_input_dataframe(status.file_path, tuple(columns))
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
     rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
     df = df.rename(columns=rename_map)
     return df
@@ -268,7 +268,7 @@ def _load_reference_dataframe(status) -> pd.DataFrame:
 
 def _load_result_dataframe(status) -> pd.DataFrame:
     columns = set(status.selected_columns.values())
-    df = load_input_dataframe(status.file_path, tuple(columns))
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
     rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
     df = df.rename(columns=rename_map)
     return df

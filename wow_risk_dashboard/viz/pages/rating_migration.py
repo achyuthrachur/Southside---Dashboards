@@ -177,7 +177,7 @@ def _dates_from_status(status, column_name: Optional[str]) -> pd.Series:
         return pd.Series(dtype="datetime64[ns]")
     if not status.file_path:
         return pd.Series(dtype="datetime64[ns]")
-    df = load_input_dataframe(status.file_path, (column_name,))
+    df = load_input_dataframe(status.file_path, (column_name,), encoding=status.encoding)
     return pd.to_datetime(df[column_name], errors="coerce").dropna()
 
 

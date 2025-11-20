@@ -197,7 +197,11 @@ def _validate_snapshots(panel_state) -> List[str]:
             or risk_status.selected_columns.get("asOfDate")
         )
         if date_column and risk_status.file_path:
-            df = load_input_dataframe(risk_status.file_path, (date_column,))
+            df = load_input_dataframe(
+                risk_status.file_path,
+                (date_column,),
+                encoding=risk_status.encoding,
+            )
             dates = _parse_date_series(df, date_column)
         else:
             dates = pd.Series(dtype="datetime64[ns]")
@@ -219,7 +223,11 @@ def _validate_snapshots(panel_state) -> List[str]:
             or chargeoff_status.selected_columns.get("asOfDate")
         )
         if date_column and chargeoff_status.file_path:
-            df = load_input_dataframe(chargeoff_status.file_path, (date_column,))
+            df = load_input_dataframe(
+                chargeoff_status.file_path,
+                (date_column,),
+                encoding=chargeoff_status.encoding,
+            )
             dates = _parse_date_series(df, date_column)
         else:
             dates = pd.Series(dtype="datetime64[ns]")

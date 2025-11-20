@@ -20,28 +20,74 @@ from wow_risk_dashboard.io import (
     normalize_headers,
     normalize_token,
 )
+from wow_risk_dashboard.io.loader import ENCODING_CANDIDATES
 
 UPLOAD_CACHE_DIR = Path(tempfile.gettempdir()) / "southside_bank_uploads"
 UPLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+ROWCOUNT_SIZE_THRESHOLD_BYTES = 130 * 1024 * 1024  # skip row counting for very large files
 
 
 @st.cache_data(show_spinner=False, ttl=None)
-def _compute_row_count(path: str) -> int:
+def _compute_row_count(path: str, encoding_hint: Optional[str] = None) -> int:
     """Return the number of rows in a cached CSV without loading it into memory."""
-    total = 0
-    for chunk in pd.read_csv(path, dtype=str, chunksize=200_000, na_filter=False):
-        total += chunk.shape[0]
-    return total
+    candidates: List[str] = []
+    if encoding_hint:
+        candidates.append(encoding_hint)
+    candidates.extend([enc for enc in ENCODING_CANDIDATES if enc not in candidates])
+
+    last_error: Optional[Exception] = None
+    for encoding in candidates:
+        try:
+            total = 0
+            for chunk in pd.read_csv(
+                path,
+                dtype=str,
+                chunksize=200_000,
+                na_filter=False,
+                encoding=encoding,
+            ):
+                total += chunk.shape[0]
+            return total
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+        except Exception:
+            raise
+    if last_error:
+        raise last_error
+    raise ValueError("Unable to detect encoding to count rows.")
 
 
 @st.cache_data(show_spinner=False, ttl=None)
-def load_input_dataframe(path: str, columns: Optional[Tuple[str, ...]] = None) -> pd.DataFrame:
+def load_input_dataframe(
+    path: str,
+    columns: Optional[Tuple[str, ...]] = None,
+    encoding: Optional[str] = None,
+) -> pd.DataFrame:
     """
     Load cached CSV data with optional column selection. Results are cached per
     file path and column tuple to avoid repeated disk IO.
     """
     usecols = list(columns) if columns else None
-    return pd.read_csv(path, dtype=str, usecols=usecols, na_filter=False)
+    session_encodings = st.session_state.get("southside_encodings", {})
+    chosen_encoding = encoding or session_encodings.get(path)
+    read_kwargs = {
+        "dtype": str,
+        "usecols": usecols,
+        "na_filter": False,
+    }
+    if chosen_encoding:
+        read_kwargs["encoding"] = chosen_encoding
+    for candidate in [chosen_encoding] + list(ENCODING_CANDIDATES):
+        if candidate:
+            read_kwargs["encoding"] = candidate
+        try:
+            return pd.read_csv(path, **read_kwargs)
+        except UnicodeDecodeError:
+            continue
+    # Fall back to pandas default if all preferred encodings fail.
+    read_kwargs.pop("encoding", None)
+    return pd.read_csv(path, **read_kwargs)
 
 
 @dataclass
@@ -71,6 +117,7 @@ class InputStatus:
     available_columns: List[str] = field(default_factory=list)
     encoding: Optional[str] = None
     row_count: Optional[int] = None
+    row_count_note: Optional[str] = None
     errors: List[str] = field(default_factory=list)
     missing_headers: List[str] = field(default_factory=list)
     selected_columns: Dict[str, str] = field(default_factory=dict)
@@ -204,10 +251,24 @@ def render_inputs_panel(
                         status.available_columns = list(record.dataframe.columns)
                         status.encoding = record.diagnostics.get("encoding")
 
-                        try:
-                            status.row_count = _compute_row_count(status.file_path)
-                        except Exception as exc:  # pragma: no cover
-                            status.errors.append(f"Unable to count rows: {exc}")
+                        session_encodings = st.session_state.setdefault("southside_encodings", {})
+                        if status.encoding:
+                            session_encodings[status.file_path] = status.encoding
+
+                        file_size = getattr(uploaded, "size", None) or len(content)
+                        if file_size and file_size > ROWCOUNT_SIZE_THRESHOLD_BYTES:
+                            status.row_count_note = (
+                                "Row count skipped for large file (>130MB) to speed up loading; "
+                                "data still loaded."
+                            )
+                        else:
+                            try:
+                                status.row_count = _compute_row_count(
+                                    status.file_path,
+                                    encoding_hint=status.encoding,
+                                )
+                            except Exception as exc:  # pragma: no cover
+                                status.row_count_note = f"Row count unavailable: {exc}"
 
                         for expectation in config.expectations:
                             selected, missing = _match_columns(
@@ -227,10 +288,14 @@ def render_inputs_panel(
                 for error in status.errors:
                     st.error(error)
             elif status.is_loaded:
-                details = [f"[OK] Loaded - {status.row_count:,} rows"]
+                details = ["[OK] Loaded"]
+                if status.row_count is not None:
+                    details.append(f"{status.row_count:,} rows")
                 if status.encoding:
                     details.append(f"encoding: {status.encoding}")
                 st.success("; ".join(details))
+                if status.row_count_note:
+                    st.caption(status.row_count_note)
             else:
                 icon = "[REQUIRED]" if config.required else "[OPTIONAL]"
                 descriptor = "Missing (required)" if config.required else "Missing (optional)"
