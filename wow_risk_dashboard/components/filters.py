@@ -45,6 +45,20 @@ def render_global_filters() -> Dict[str, object]:
     else:
         portfolio_selection = []
 
+    available_scenarios: List[str] = st.session_state.get("southside_scenarios", [])
+    scenario_options = ["All scenarios"] + available_scenarios
+    saved_scenario = st.session_state.get("southside_selected_scenario", scenario_options[0])
+    if saved_scenario not in scenario_options:
+        saved_scenario = scenario_options[0]
+    scenario = st.sidebar.selectbox(
+        "Scenario",
+        options=scenario_options,
+        index=scenario_options.index(saved_scenario),
+        help="Choose a credit scenario to refresh the PD/LGD/exposure heatmaps.",
+        disabled=not available_scenarios,
+    )
+    st.session_state["southside_selected_scenario"] = scenario
+
     geography = st.sidebar.selectbox(
         "Geography level",
         options=["State", "CBSA"],
@@ -70,6 +84,7 @@ def render_global_filters() -> Dict[str, object]:
         "quarter": quarter,
         "portfolio": portfolio_label,
         "portfolio_list": portfolio_selection,
+        "scenario": scenario,
         "geography": geography,
         "occupancy": occupancy,
         "property_group": property_group,

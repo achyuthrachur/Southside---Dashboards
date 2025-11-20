@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -91,9 +91,22 @@ STATE_ABBREVIATIONS = {
     "US VIRGIN ISLANDS": "VI",
 }
 STATE_ABBREVIATION_SET: Set[str] = set(STATE_ABBREVIATIONS.values())
+PLOTLY_STATE_EXCLUSIONS: Set[str] = {"AS", "GU", "MP", "PR", "VI"}
+PLOTLY_STATE_CODES: Tuple[str, ...] = tuple(
+    sorted(code for code in STATE_ABBREVIATION_SET if code not in PLOTLY_STATE_EXCLUSIONS)
+)
+CBSA_COLUMN_CANDIDATES: Tuple[str, ...] = (
+    "geographyCode",
+    "cbsaIdentifier",
+    "cbsaCode",
+    "cbsa",
+    "msaCode",
+    "msa",
+)
 ESSENTIAL_COLUMNS: Set[str] = {
     "instrumentIdentifier",
     "portfolioIdentifier",
+    "scenarioIdentifier",
     "geographyCode",
     "borrowerState",
     "collateralState",
@@ -185,6 +198,11 @@ INPUT_CONFIGS = [
                 candidates=["reportingDate", "asOfDate"],
                 required=False,
                 match="any",
+            ),
+            HeaderExpectation(
+                name="Scenario identifier",
+                candidates=["scenarioIdentifier"],
+                required=False,
             ),
             HeaderExpectation(
                 name="One-year PD",
@@ -322,6 +340,34 @@ def _derive_quarter(df: pd.DataFrame) -> pd.Series:
     return quarter
 
 
+def _extract_cbsa_codes(df: pd.DataFrame) -> pd.Series:
+    """
+    Derive CBSA codes from any available geography-related columns.
+    """
+    cbsa_series = pd.Series(pd.NA, index=df.index, dtype="object")
+    candidate_columns: List[str] = []
+    for field in CBSA_COLUMN_CANDIDATES:
+        for column in df.columns:
+            if column == field or column.startswith(f"{field}_"):
+                candidate_columns.append(column)
+    for column in candidate_columns:
+        raw = df[column].astype(str)
+        extracted = raw.str.extract(r"(\d{5})", expand=False)
+        cbsa_series = cbsa_series.where(cbsa_series.notna(), extracted)
+        if cbsa_series.notna().all():
+            break
+
+    def _normalize(value: object) -> Optional[str]:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        token = str(value).strip()
+        if not token:
+            return None
+        return token.zfill(5)
+
+    return cbsa_series.map(_normalize)
+
+
 def _prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     keep: List[str] = []
     for column in df.columns:
@@ -356,8 +402,33 @@ def _summarize_by_state(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _summarize_by_cbsa(frame: pd.DataFrame) -> pd.DataFrame:
+    if "cbsa_code" not in frame.columns:
+        return pd.DataFrame(
+            columns=[
+                "cbsa_code",
+                "avg_pd",
+                "avg_lgd",
+                "exposure",
+                "instrument_count",
+                "exposure_share",
+                "cbsa_name",
+            ]
+        )
+    filtered = frame.dropna(subset=["cbsa_code"])
+    if filtered.empty:
+        return pd.DataFrame(
+            columns=[
+                "cbsa_code",
+                "avg_pd",
+                "avg_lgd",
+                "exposure",
+                "instrument_count",
+                "exposure_share",
+                "cbsa_name",
+            ]
+        )
     summary = (
-        frame.groupby("cbsa_code", dropna=True)
+        filtered.groupby("cbsa_code", dropna=True)
         .agg(
             avg_pd=("annualizedPDOneYear", "mean"),
             avg_lgd=("lgdLifetime", "mean"),
@@ -366,6 +437,7 @@ def _summarize_by_cbsa(frame: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
+    summary["cbsa_code"] = summary["cbsa_code"].apply(lambda value: str(value).zfill(5))
     metadata = load_cbsa_geojson()["metadata"]
     if not metadata.empty:
         summary = summary.merge(metadata, how="left", on="cbsa_code")
@@ -377,6 +449,23 @@ def _summarize_by_cbsa(frame: pd.DataFrame) -> pd.DataFrame:
     else:
         summary["exposure_share"] = np.nan
     return summary
+
+
+def _prepare_state_map_data(summary: pd.DataFrame) -> pd.DataFrame:
+    if "state" in summary.columns:
+        base = summary.set_index("state")
+    else:
+        base = pd.DataFrame(
+            columns=["avg_pd", "avg_lgd", "exposure", "instrument_count", "exposure_share"],
+            index=pd.Index([], name="state"),
+        )
+    map_df = base.reindex(PLOTLY_STATE_CODES).reset_index()
+    for column in ["exposure", "instrument_count"]:
+        if column in map_df.columns:
+            map_df[column] = map_df[column].fillna(0)
+    if "exposure_share" in map_df.columns:
+        map_df["exposure_share"] = map_df["exposure_share"].fillna(0)
+    return map_df
 
 
 def _prepare_heatmap_data(panel_state) -> HeatmapData:
@@ -405,6 +494,21 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
         st.session_state["southside_portfolios"] = combined
     merged = _prune_columns(merged).copy()
 
+    if "scenarioIdentifier" in merged.columns:
+        scenario_values = sorted(
+            {
+                str(value).strip()
+                for value in merged["scenarioIdentifier"].dropna()
+                if str(value).strip()
+            }
+        )
+        if scenario_values:
+            st.session_state["southside_scenarios"] = scenario_values
+        else:
+            st.session_state.pop("southside_scenarios", None)
+    else:
+        st.session_state.pop("southside_scenarios", None)
+
     merged["state"] = _normalize_state(
         merged["borrowerState"].where(merged["borrowerState"].notna(), merged.get("collateralState"))
     )
@@ -414,11 +518,7 @@ def _prepare_heatmap_data(panel_state) -> HeatmapData:
     merged["propertyGroup"] = merged.apply(_choose_property_group, axis=1)
 
     merged["quarter"] = _derive_quarter(merged)
-    merged["cbsa_code"] = (
-        merged.get("geographyCode", pd.Series(index=merged.index, dtype=str))
-        .astype(str)
-        .str.extract(r"(\\d{5})", expand=False)
-    )
+    merged["cbsa_code"] = _extract_cbsa_codes(merged)
 
     for column in ["annualizedPDOneYear", "lgdLifetime", "amortizedCost"]:
         if column in merged.columns:
@@ -456,6 +556,11 @@ def _apply_filters(data: HeatmapData, filters: Dict[str, str]) -> HeatmapData:
             normalized_quarter = f"{cleaned[-4:]}Q{cleaned[1]}"
         mask = frame["quarter"].astype(str) == normalized_quarter
         frame = frame[mask]
+
+    scenario_filter = filters.get("scenario", "All scenarios")
+    if scenario_filter and scenario_filter != "All scenarios" and "scenarioIdentifier" in frame.columns:
+        normalized = frame["scenarioIdentifier"].fillna("").astype(str).str.strip()
+        frame = frame[normalized == scenario_filter]
 
     occupancy_filter = filters.get("occupancy", "All")
     if occupancy_filter and occupancy_filter != "All":
@@ -511,8 +616,9 @@ def _render_state_heatmap(summary: pd.DataFrame, metric_label: str, metric_colum
         "exposure_share": "Viridis",
     }[metric_column]
 
+    map_data = _prepare_state_map_data(summary)
     fig = px.choropleth(
-        summary,
+        map_data,
         locations="state",
         locationmode="USA-states",
         color=metric_column,
@@ -532,12 +638,13 @@ def _render_state_heatmap(summary: pd.DataFrame, metric_label: str, metric_colum
         },
     )
     fig.update_geos(
-        fitbounds="locations",
         visible=False,
+        showcountries=False,
         showcoastlines=True,
         coastlinecolor="#2E2E2E",
         showlakes=True,
         lakecolor="#ffffff",
+        projection_type="albers usa",
     )
     fig.update_traces(marker_line_color="#1c1c1c", marker_line_width=1.0)
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), coloraxis_colorbar=dict(title=metric_label))
@@ -669,7 +776,10 @@ def load_cbsa_geojson() -> Dict[str, Optional[object]]:
 
 def _render_cbsa_heatmap(summary: pd.DataFrame, metric_label: str, metric_column: str) -> None:
     if summary.empty:
-        st.warning("No CBSA-level data available after applying filters.")
+        st.warning(
+            "No CBSA-level data available after applying filters. Ensure the uploaded files include CBSA or "
+            "geography codes so the dashboard can map each instrument."
+        )
         return
 
     data = load_cbsa_geojson()
@@ -806,6 +916,10 @@ def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
 
     metric_label = _select_metric_label(filtered_data.metric_columns)
     metric_column = filtered_data.metric_columns[metric_label]
+    st.caption(
+        "Exposure share reflects each geography's share of amortized cost after the current filters "
+        "are applied (geography amortized cost ÷ total amortized cost)."
+    )
 
     if geography_level == "CBSA":
         _render_cbsa_heatmap(summary, metric_label, metric_column)

@@ -59,7 +59,10 @@ INSTRUMENT_REFERENCE_ALIASES: AliasMap = {
     "collateralZipCode": alias_variants("collateralZipCode", ["collateral_zip_code", "collateral_zip"]),
     "borrowerState": alias_variants("borrowerState", ["borrower_state"]),
     "collateralState": alias_variants("collateralState", ["collateral_state"]),
-    "geographyCode": alias_variants("geographyCode", ["geography_code", "cbsa_code", "msa_code"]),
+    "geographyCode": alias_variants(
+        "geographyCode",
+        ["geography_code", "cbsa_code", "msa_code", "cbsaIdentifier", "cbsaId"],
+    ),
     "occupancyStatus": alias_variants("occupancyStatus", ["occupancy_status"]),
     "propertyStatus": alias_variants("propertyStatus", ["property_status"]),
     "loanPropertyGroupIdentifier": alias_variants(
@@ -97,6 +100,10 @@ INSTRUMENT_RISK_METRIC_ALIASES: AliasMap = {
 INSTRUMENT_RESULT_ALIASES: AliasMap = {
     "instrumentIdentifier": alias_variants("instrumentIdentifier", ["instrument_id"]),
     "portfolioIdentifier": alias_variants("portfolioIdentifier", ["portfolio_id"]),
+    "scenarioIdentifier": alias_variants(
+        "scenarioIdentifier",
+        ["scenario_identifier", "scenarioId"],
+    ),
     "reportingDate": alias_variants("reportingDate", ["reporting_date"]),
     "asOfDate": alias_variants("asOfDate", ["as_of_date"]),
     "riskClassification": alias_variants("riskClassification", ["risk_classification"]),
