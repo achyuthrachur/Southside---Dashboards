@@ -619,6 +619,16 @@ def _render_state_heatmap(summary: pd.DataFrame, metric_label: str, metric_colum
     }[metric_column]
 
     map_data = _prepare_state_map_data(summary)
+    # Ensure every state renders with an outline even when metric data is missing.
+    if metric_column in map_data.columns:
+        map_data[metric_column] = map_data[metric_column].fillna(0)
+    for col in ["avg_pd", "avg_lgd", "exposure_share"]:
+        if col in map_data.columns:
+            map_data[col] = map_data[col].fillna(0)
+    for col in ["exposure", "instrument_count"]:
+        if col in map_data.columns:
+            map_data[col] = map_data[col].fillna(0)
+
     fig = px.choropleth(
         map_data,
         locations="state",
