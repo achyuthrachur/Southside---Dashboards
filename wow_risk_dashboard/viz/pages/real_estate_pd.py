@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -22,6 +23,8 @@ CBSA_GEOJSON_PATH = PROJECT_ROOT / "data" / "cbsa.geojson"
 CBSA_METADATA_PATH = PROJECT_ROOT / "data" / "cbsa_metadata.csv"
 CBSA_FEATURE_FOLDER = PROJECT_ROOT / "cbsa_json_per_cbsa"
 CBSA_SHAPEFILE_PATH = PROJECT_ROOT / "tl_2023_us_cbsa" / "tl_2023_us_cbsa.shp"
+ZIP_CBSA_CSV_PATH = PROJECT_ROOT / "data" / "zip_cbsa_crosswalk.csv"
+ZIP_CBSA_XLSX_GLOB = PROJECT_ROOT.glob("data/ZIP_CBSA*.xlsx")
 
 from wow_risk_dashboard.components import (
     HeaderExpectation,
@@ -340,6 +343,47 @@ def _derive_quarter(df: pd.DataFrame) -> pd.Series:
     return quarter
 
 
+@lru_cache(maxsize=1)
+def _load_zip_cbsa_mapping() -> pd.DataFrame:
+    """
+    Load ZIP-to-CBSA crosswalk, preferring CSV but accepting HUD XLSX files.
+    """
+    candidates: List[Path] = []
+    if ZIP_CBSA_CSV_PATH.exists():
+        candidates.append(ZIP_CBSA_CSV_PATH)
+    xlsx_candidates = sorted(PROJECT_ROOT.glob("data/ZIP_CBSA*.xlsx"))
+    candidates.extend(xlsx_candidates)
+    if not candidates:
+        return pd.DataFrame(columns=["zip", "cbsa_code"])
+
+    path = candidates[0]
+    try:
+        if path.suffix.lower() == ".csv":
+            df = pd.read_csv(path, dtype=str)
+        else:
+            df = pd.read_excel(path, dtype=str)
+    except Exception as exc:  # pragma: no cover - diagnostics only
+        st.warning(f"Unable to load ZIP->CBSA crosswalk ({path.name}): {exc}")
+        return pd.DataFrame(columns=["zip", "cbsa_code"])
+
+    df.columns = [str(col).strip().lower() for col in df.columns]
+    zip_col = next((col for col in df.columns if col.startswith("zip")), None)
+    cbsa_col = next((col for col in df.columns if "cbsa" in col and not col.startswith("zip")), None)
+    if not zip_col or not cbsa_col:
+        st.warning("ZIP->CBSA crosswalk missing expected columns ('zip', 'cbsa').")
+        return pd.DataFrame(columns=["zip", "cbsa_code"])
+
+    ratio_col = next((col for col in df.columns if "tot_ratio" in col or col == "ratio"), None)
+    df["zip"] = df[zip_col].astype(str).str.extract(r"(\d{5})", expand=False)
+    df["cbsa_code"] = df[cbsa_col].astype(str).str.extract(r"(\d{5})", expand=False)
+    df = df.dropna(subset=["zip", "cbsa_code"])
+    if ratio_col and ratio_col in df.columns:
+        df[ratio_col] = pd.to_numeric(df[ratio_col], errors="coerce").fillna(0)
+        df = df.sort_values(ratio_col, ascending=False)
+    df = df.drop_duplicates(subset=["zip"])
+    return df[["zip", "cbsa_code"]]
+
+
 def _extract_cbsa_codes(df: pd.DataFrame) -> pd.Series:
     """
     Derive CBSA codes from any available geography-related columns.
@@ -356,6 +400,19 @@ def _extract_cbsa_codes(df: pd.DataFrame) -> pd.Series:
         cbsa_series = cbsa_series.where(cbsa_series.notna(), extracted)
         if cbsa_series.notna().all():
             break
+
+    if cbsa_series.isna().any():
+        zip_mapping = _load_zip_cbsa_mapping()
+        if not zip_mapping.empty:
+            mapping = zip_mapping.set_index("zip")["cbsa_code"]
+            for zip_field in ["geographyCode", "borrowerZipCode", "collateralZipCode"]:
+                if zip_field not in df.columns:
+                    continue
+                zips = df[zip_field].astype(str).str.extract(r"(\d{5})", expand=False)
+                mapped = zips.map(mapping)
+                cbsa_series = cbsa_series.where(cbsa_series.notna(), mapped)
+                if cbsa_series.notna().all():
+                    break
 
     def _normalize(value: object) -> Optional[str]:
         if value is None or (isinstance(value, float) and np.isnan(value)):
