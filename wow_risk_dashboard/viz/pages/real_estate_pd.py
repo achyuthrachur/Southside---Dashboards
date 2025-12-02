@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -384,6 +386,50 @@ def _load_zip_cbsa_mapping() -> pd.DataFrame:
     return df[["zip", "cbsa_code"]]
 
 
+def _load_zip_cbsa_mapping_latest() -> pd.DataFrame:
+    """
+    Non-cached loader that always reads the freshest ZIP->CBSA crosswalk file.
+    """
+    candidates: List[Path] = []
+    if ZIP_CBSA_CSV_PATH.exists():
+        candidates.append(ZIP_CBSA_CSV_PATH)
+    candidates.extend(sorted(PROJECT_ROOT.glob("data/ZIP_CBSA*.xlsx")))
+    if not candidates:
+        return pd.DataFrame(columns=["zip", "cbsa_code"])
+
+    chosen = max(candidates, key=lambda p: p.stat().st_mtime)
+    try:
+        if chosen.suffix.lower() == ".csv":
+            df = pd.read_csv(chosen, dtype=str)
+        else:
+            try:
+                df = pd.read_excel(chosen, dtype=str)
+            except PermissionError:
+                # If the workbook is open/locked, copy to a temp file and read from there.
+                tmp = Path(tempfile.gettempdir()) / f"{chosen.stem}_tmp.xlsx"
+                shutil.copyfile(chosen, tmp)
+                df = pd.read_excel(tmp, dtype=str)
+    except Exception as exc:  # pragma: no cover - diagnostics only
+        st.warning(f"Unable to load ZIP->CBSA crosswalk ({chosen.name}): {exc}")
+        return pd.DataFrame(columns=["zip", "cbsa_code"])
+
+    df.columns = [str(col).strip().lower() for col in df.columns]
+    zip_col = next((col for col in df.columns if col.startswith("zip")), None)
+    cbsa_col = next((col for col in df.columns if "cbsa" in col and not col.startswith("zip")), None)
+    if not zip_col or not cbsa_col:
+        return pd.DataFrame(columns=["zip", "cbsa_code"])
+
+    ratio_col = next((col for col in df.columns if "tot_ratio" in col or col == "ratio"), None)
+    df["zip"] = df[zip_col].astype(str).str.extract(r"(\d{5})", expand=False)
+    df["cbsa_code"] = df[cbsa_col].astype(str).str.extract(r"(\d{5})", expand=False)
+    df = df.dropna(subset=["zip", "cbsa_code"])
+    if ratio_col and ratio_col in df.columns:
+        df[ratio_col] = pd.to_numeric(df[ratio_col], errors="coerce").fillna(0)
+        df = df.sort_values(ratio_col, ascending=False)
+    df = df.drop_duplicates(subset=["zip"])
+    return df[["zip", "cbsa_code"]]
+
+
 def _extract_cbsa_codes(df: pd.DataFrame) -> pd.Series:
     """
     Derive CBSA codes from any available geography-related columns.
@@ -402,7 +448,8 @@ def _extract_cbsa_codes(df: pd.DataFrame) -> pd.Series:
             break
 
     if cbsa_series.isna().any():
-        zip_mapping = _load_zip_cbsa_mapping()
+        # Always pull the freshest crosswalk so newly added files are recognized without restart.
+        zip_mapping = _load_zip_cbsa_mapping_latest()
         if not zip_mapping.empty:
             mapping = zip_mapping.set_index("zip")["cbsa_code"]
             for zip_field in ["geographyCode", "borrowerZipCode", "collateralZipCode"]:
