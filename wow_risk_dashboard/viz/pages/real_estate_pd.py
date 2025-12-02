@@ -265,6 +265,24 @@ def _get_selected_column(status, canonical: str) -> Optional[str]:
 
 def _load_reference_dataframe(status) -> pd.DataFrame:
     columns = set(status.selected_columns.values())
+
+    # Ensure ZIP fields are loaded even if geographyCode was matched first, so we can map CBSA via ZIP.
+    if status.config.dataset_key == "instrument_reference":
+        try:
+            from wow_risk_dashboard.io.schemas import DATASET_SPECS
+            from wow_risk_dashboard.io.loader import normalize_headers, normalize_token
+
+            spec = DATASET_SPECS["instrument_reference"]
+            header_map = normalize_headers(status.available_columns)
+            for canonical in ("borrowerZipCode", "collateralZipCode"):
+                for alias in spec.alias_for(canonical):
+                    token = normalize_token(alias)
+                    if token in header_map:
+                        columns.add(header_map[token][0])
+                        break
+        except Exception:
+            pass
+
     df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
     rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
     df = df.rename(columns=rename_map)
