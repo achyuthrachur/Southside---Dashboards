@@ -12,3 +12,9 @@ views:
 
 The implementation roadmap follows the specification provided by the Southside Bank team
 and will be executed across multiple commits to highlight key milestones.
+
+## Developer notes
+
+- Upload panels validate required headers per page; the Explain Data expander lists the exact columns selected.
+- Exports persist CSV/Parquet artifacts under `processed/` for downstream reuse.
+- Synthetic inputs for demos/tests can be generated via `wow_risk_dashboard.io.sample` (see `sample_inputs_for_page`).

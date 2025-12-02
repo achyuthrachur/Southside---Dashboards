@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from wow_risk_dashboard.components import (
@@ -16,8 +17,12 @@ from wow_risk_dashboard.components import (
     render_inputs_panel,
     load_input_dataframe,
 )
+from wow_risk_dashboard.io.schemas import PD_PRIORITY, RATING_PRIORITY
+from wow_risk_dashboard.transforms.metrics import build_rating_migration
 
 PAGE_KEY = "rating_migration"
+RATING_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"]
+RATING_RANK = {value: idx for idx, value in enumerate(RATING_ORDER)}
 
 INPUT_CONFIGS = [
     PageInputConfig(
@@ -214,6 +219,79 @@ def _validate_quarters(panel_state) -> List[str]:
     return errors
 
 
+def _select_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for column in candidates:
+        if column in df.columns:
+            return column
+    return None
+
+
+def _load_result(status, period_label: str) -> pd.DataFrame:
+    if not status.is_loaded:
+        return pd.DataFrame()
+    columns = list(status.selected_columns.values())
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
+    rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
+    df = df.rename(columns=rename_map)
+    rating_col = _select_column(df, list(RATING_PRIORITY))
+    if rating_col:
+        df = df.rename(columns={rating_col: "rating"})
+    df["period"] = period_label
+    keep = [col for col in ["instrumentIdentifier", "portfolioIdentifier", "rating", "period"] if col in df.columns]
+    return df[keep]
+
+
+def _load_risk_metric(status, period_label: str) -> pd.DataFrame:
+    if not status.is_loaded:
+        return pd.DataFrame()
+    columns = list(status.selected_columns.values())
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
+    rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
+    df = df.rename(columns=rename_map)
+    pd_col = _select_column(df, list(PD_PRIORITY))
+    if not pd_col:
+        return pd.DataFrame()
+    df["period"] = period_label
+    df = df.rename(columns={pd_col: "pd_value"})
+    keep = [col for col in ["instrumentIdentifier", "pd_value", "period"] if col in df.columns]
+    return df[keep]
+
+
+def _render_transition_heatmap(matrix: pd.DataFrame) -> None:
+    if matrix.empty:
+        st.warning("No migration pairs available to render the heatmap.")
+        return
+    mat = matrix.set_index(matrix.columns[0])
+    fig = px.imshow(
+        mat,
+        labels={"x": "End rating", "y": "Start rating", "color": "Count"},
+        text_auto=True,
+        aspect="auto",
+        color_continuous_scale="Blues",
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_movers(movers: pd.DataFrame) -> None:
+    if movers.empty:
+        st.info("No instruments with valid start and end ratings.")
+        return
+    display = movers.copy()
+    display = display.rename(
+        columns={
+            "instrumentIdentifier": "Instrument",
+            "start": "Start",
+            "end": "End",
+            "direction": "Direction",
+        }
+    )
+    columns = ["Instrument", "Start", "End", "Direction"]
+    if "magnitude" in display.columns:
+        columns.append("magnitude")
+    st.dataframe(display[columns], use_container_width=True, hide_index=True)
+
+
 def render_rating_migration_page(filters: Dict[str, str]) -> None:
     panel_state = render_inputs_panel(PAGE_KEY, INPUT_CONFIGS)
     if not _render_readiness(panel_state):
@@ -225,8 +303,47 @@ def render_rating_migration_page(filters: Dict[str, str]) -> None:
             st.error(error)
         st.stop()
 
-    st.info(
-        "Risk rating migration visuals for Southside Bank will appear here once the "
-        "transition analytics are wired to processed datasets."
+    res_2023 = _load_result(panel_state.statuses["result_q2_2023"], "2023Q2")
+    res_2025 = _load_result(panel_state.statuses["result_q2_2025"], "2025Q2")
+    risk_2023 = _load_risk_metric(panel_state.statuses["risk_q2_2023"], "2023Q2")
+    risk_2025 = _load_risk_metric(panel_state.statuses["risk_q2_2025"], "2025Q2")
+
+    results = pd.concat([res_2023, res_2025], ignore_index=True)
+    risk_metrics = pd.concat([risk_2023, risk_2025], ignore_index=True)
+
+    edges, matrix, movers = build_rating_migration(results, risk_metrics)
+    if edges.empty:
+        st.warning("No overlapping instruments with start and end ratings were found.")
+        export_controls("rating_migration")
+        return
+
+    total = edges["count"].sum()
+
+    def _rank(value: str) -> int:
+        return RATING_RANK.get(str(value), len(RATING_ORDER))
+
+    upgrades = edges[edges.apply(lambda row: _rank(row["end"]) < _rank(row["start"]), axis=1)]["count"].sum()
+    downgrades = edges[edges.apply(lambda row: _rank(row["end"]) > _rank(row["start"]), axis=1)]["count"].sum()
+    unchanged = total - upgrades - downgrades
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Cohort", f"{total:,} instruments")
+    c2.metric("Upgrades", f"{upgrades:,}")
+    c3.metric("Downgrades", f"{downgrades:,}")
+    c4.metric("Unchanged", f"{unchanged:,}")
+
+    st.markdown("### Transition matrix")
+    _render_transition_heatmap(matrix)
+
+    st.markdown("### Top movers")
+    top_movers = movers.head(25)
+    _render_movers(top_movers)
+
+    export_controls(
+        "rating_migration",
+        dataframes={
+            "edges": edges,
+            "matrix": matrix,
+            "movers": movers,
+        },
     )
-    export_controls("rating_migration")

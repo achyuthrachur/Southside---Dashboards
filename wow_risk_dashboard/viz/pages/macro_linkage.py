@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from wow_risk_dashboard.components import (
@@ -17,6 +18,7 @@ from wow_risk_dashboard.components import (
     render_inputs_panel,
     load_input_dataframe,
 )
+from wow_risk_dashboard.io.schemas import PD_PRIORITY, GEOGRAPHY_PRIORITY
 
 PAGE_KEY = "macro_linkage"
 EXPECTED_START = datetime(2023, 1, 1)
@@ -158,6 +160,59 @@ def _validate_timespan(panel_state) -> List[str]:
     return errors
 
 
+def _pick_column(df: pd.DataFrame, candidates) -> Optional[str]:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _load_risk_series(status) -> pd.DataFrame:
+    if not status.is_loaded:
+        return pd.DataFrame()
+    columns = list(status.selected_columns.values())
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
+    rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
+    df = df.rename(columns=rename_map)
+    pd_col = _pick_column(df, PD_PRIORITY)
+    date_col = _pick_column(df, ["reportingDate", "asOfDate"])
+    if not pd_col or not date_col:
+        return pd.DataFrame()
+    df["pd_value"] = pd.to_numeric(df[pd_col], errors="coerce")
+    df["observation_date"] = pd.to_datetime(df[date_col], errors="coerce")
+    keep = ["instrumentIdentifier", "pd_value", "observation_date"]
+    return df[keep]
+
+
+def _load_reference(status) -> pd.DataFrame:
+    if not status.is_loaded:
+        return pd.DataFrame()
+    columns = list(status.selected_columns.values())
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
+    rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
+    df = df.rename(columns=rename_map)
+    keep = ["instrumentIdentifier"] + [col for col in GEOGRAPHY_PRIORITY if col in df.columns] + ["borrowerState", "collateralState"]
+    keep = [col for col in keep if col in df.columns]
+    return df[keep]
+
+
+def _normalize_state(series: pd.Series) -> pd.Series:
+    cleaned = series.fillna("").astype(str).str.upper().str.strip()
+    return cleaned.where(cleaned.str.len() == 2)
+
+
+def _attach_geography(risk_df: pd.DataFrame, reference_df: pd.DataFrame) -> pd.DataFrame:
+    merged = risk_df.merge(reference_df, on="instrumentIdentifier", how="left")
+    state = merged["borrowerState"] if "borrowerState" in merged.columns else merged.get("collateralState")
+    merged["state"] = _normalize_state(state) if state is not None else pd.NA
+    geo_col = _pick_column(merged, list(GEOGRAPHY_PRIORITY))
+    if geo_col:
+        merged["geography"] = merged[geo_col]
+    else:
+        merged["geography"] = merged["state"]
+    return merged
+
+
 def render_macro_linkage_page(filters: Dict[str, str]) -> None:
     panel_state = render_inputs_panel(PAGE_KEY, INPUT_CONFIGS)
     if not _render_readiness(panel_state):
@@ -169,8 +224,68 @@ def render_macro_linkage_page(filters: Dict[str, str]) -> None:
             st.error(error)
         st.stop()
 
-    st.info(
-        "Macro linkage dashboards for Southside Bank will be displayed here once "
-        "internal PD/LGD trends are joined with external macroeconomic series."
+    risk_df = _load_risk_series(panel_state.statuses["risk_metrics_timeseries"])
+    ref_df = _load_reference(panel_state.statuses["reference_enrichment"])
+    if risk_df.empty or ref_df.empty:
+        st.warning("Risk metric time series or reference geography file is empty.")
+        export_controls("macro_linkage")
+        return
+
+    merged = _attach_geography(risk_df, ref_df)
+    merged = merged.dropna(subset=["observation_date"])
+    merged["month"] = merged["observation_date"].dt.to_period("M")
+
+    monthly_trend = (
+        merged.groupby("month")["pd_value"]
+        .mean()
+        .reset_index()
+        .sort_values("month")
     )
-    export_controls("macro_linkage")
+
+    geo_summary = (
+        merged.groupby(["geography", "month"])["pd_value"]
+        .mean()
+        .reset_index()
+        .sort_values("month")
+    )
+
+    st.markdown("### Portfolio PD trend")
+    fig = px.line(
+        monthly_trend,
+        x="month",
+        y="pd_value",
+        labels={"pd_value": "Average PD", "month": "Month"},
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Geography movers (PD change from start to end)")
+    geo_first_last = (
+        geo_summary.groupby("geography")["pd_value"]
+        .agg(start="first", end="last")
+        .reset_index()
+    )
+    geo_first_last["change"] = geo_first_last["end"] - geo_first_last["start"]
+    movers = geo_first_last.sort_values("change", ascending=False).head(15)
+    bar = px.bar(
+        movers,
+        x="geography",
+        y="change",
+        labels={"geography": "Geography", "change": "PD change"},
+    )
+    bar.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+    st.plotly_chart(bar, use_container_width=True)
+
+    st.markdown("### Latest PD by geography")
+    latest_month = merged["month"].max()
+    latest = geo_summary[geo_summary["month"] == latest_month].rename(columns={"pd_value": "average_pd"})
+    st.dataframe(latest, use_container_width=True, hide_index=True)
+
+    export_controls(
+        "macro_linkage",
+        dataframes={
+            "portfolio_trend": monthly_trend,
+            "geo_trend": geo_summary,
+            "geo_movers": geo_first_last,
+        },
+    )

@@ -28,6 +28,14 @@ from .schemas import (
     DatasetSpec,
 )
 from .storage import DatasetRegistry, PersistedDataset
+from .sample import (
+    generate_sample_reference,
+    generate_sample_results,
+    generate_sample_risk_metrics,
+    generate_sample_chargeoffs,
+    generate_sample_cashflows,
+    sample_inputs_for_page,
+)
 
 __all__ = [
     "AliasMap",
@@ -54,4 +62,10 @@ __all__ = [
     "GEOGRAPHY_PRIORITY",
     "PROPERTY_FIELDS",
     "OCCUPANCY_FIELD",
+    "generate_sample_reference",
+    "generate_sample_results",
+    "generate_sample_risk_metrics",
+    "generate_sample_chargeoffs",
+    "generate_sample_cashflows",
+    "sample_inputs_for_page",
 ]

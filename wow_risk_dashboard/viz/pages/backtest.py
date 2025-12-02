@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from wow_risk_dashboard.components import (
@@ -17,6 +18,7 @@ from wow_risk_dashboard.components import (
     render_inputs_panel,
     load_input_dataframe,
 )
+from wow_risk_dashboard.io.schemas import PD_PRIORITY, EAD_PRIORITY, LGD_FIELDS, CHARGEOFF_AMOUNT_PRIORITY, DATE_FIELDS
 
 PAGE_KEY = "backtest"
 START_2024 = datetime(2024, 1, 1)
@@ -246,6 +248,92 @@ def _validate_snapshots(panel_state) -> List[str]:
     return errors
 
 
+def _pick_column(df: pd.DataFrame, candidates) -> Optional[str]:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _load_status(status) -> pd.DataFrame:
+    if not status.is_loaded:
+        return pd.DataFrame()
+    columns = list(status.selected_columns.values())
+    df = load_input_dataframe(status.file_path, tuple(columns), encoding=status.encoding)
+    rename_map = {actual: canonical for canonical, actual in status.selected_columns.items()}
+    return df.rename(columns=rename_map)
+
+
+def _prepare_expected_losses(risk_df: pd.DataFrame, result_df: pd.DataFrame) -> pd.DataFrame:
+    if risk_df.empty:
+        return pd.DataFrame()
+    expected = risk_df.copy()
+    pd_col = _pick_column(expected, PD_PRIORITY)
+    if not pd_col:
+        return pd.DataFrame()
+    expected["pd_value"] = pd.to_numeric(expected[pd_col], errors="coerce").fillna(0.0)
+
+    lgd_col = _pick_column(expected, LGD_FIELDS)
+    expected["lgd_value"] = pd.to_numeric(expected[lgd_col], errors="coerce").fillna(0.45) if lgd_col else 0.45
+
+    ead_col = _pick_column(expected, EAD_PRIORITY)
+    if not ead_col and not result_df.empty:
+        alt = _pick_column(result_df, EAD_PRIORITY)
+        if alt:
+            expected = expected.merge(
+                result_df[["instrumentIdentifier", alt]],
+                on="instrumentIdentifier",
+                how="left",
+                suffixes=("", "_alt"),
+            )
+            ead_col = alt
+    expected["ead_value"] = pd.to_numeric(expected.get(ead_col, 0), errors="coerce").fillna(0.0)
+    expected["expected_loss"] = expected["pd_value"] * expected["lgd_value"] * expected["ead_value"]
+    columns = ["instrumentIdentifier"]
+    if "portfolioIdentifier" in expected.columns:
+        columns.append("portfolioIdentifier")
+    columns.extend(["pd_value", "lgd_value", "ead_value", "expected_loss"])
+    return expected[columns]
+
+
+def _prepare_realized_losses(chargeoff_df: pd.DataFrame, cashflow_df: pd.DataFrame) -> pd.DataFrame:
+    frames: List[pd.DataFrame] = []
+
+    if not chargeoff_df.empty:
+        amount_col = _pick_column(chargeoff_df, CHARGEOFF_AMOUNT_PRIORITY)
+        date_col = _pick_column(chargeoff_df, DATE_FIELDS)
+        if amount_col and date_col:
+            df = chargeoff_df[["instrumentIdentifier", amount_col, date_col]].copy()
+            df = df.rename(columns={amount_col: "realized_amount", date_col: "event_date"})
+            df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce")
+            frames.append(df)
+
+    if not cashflow_df.empty:
+        amount_col = _pick_column(cashflow_df, ["defaultAmount"])
+        recovery_col = _pick_column(cashflow_df, ["principalRecoveryAmount"])
+        date_col = _pick_column(cashflow_df, DATE_FIELDS)
+        if amount_col and date_col:
+            df = cashflow_df[["instrumentIdentifier", amount_col, date_col]].copy()
+            df["realized_amount"] = pd.to_numeric(df[amount_col], errors="coerce")
+            if recovery_col and recovery_col in cashflow_df.columns:
+                df["realized_amount"] = df["realized_amount"] - pd.to_numeric(
+                    cashflow_df[recovery_col], errors="coerce"
+                ).fillna(0.0)
+            df = df.rename(columns={date_col: "event_date"})
+            df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce")
+            frames.append(df[["instrumentIdentifier", "realized_amount", "event_date"]])
+
+    if not frames:
+        return pd.DataFrame()
+
+    realized = pd.concat(frames, ignore_index=True)
+    realized = realized.dropna(subset=["event_date"])
+    realized = realized[
+        (realized["event_date"] >= START_2024) & (realized["event_date"] <= END_2024)
+    ]
+    return realized
+
+
 def render_backtest_page(filters: Dict[str, str]) -> None:
     panel_state = render_inputs_panel(PAGE_KEY, INPUT_CONFIGS)
     if not _render_readiness(panel_state):
@@ -266,8 +354,61 @@ def render_backtest_page(filters: Dict[str, str]) -> None:
             st.error(error)
         st.stop()
 
-    st.info(
-        "Expected vs realized loss analytics for Southside Bank will appear here once "
-        "the calibration pipeline is connected to processed data."
+    risk_df = _load_status(panel_state.statuses["risk_metric_snapshot"])
+    result_df = _load_status(panel_state.statuses["result_snapshot"])
+    chargeoff_df = _load_status(panel_state.statuses["chargeoff_2024"])
+    cashflow_df = _load_status(panel_state.statuses["cashflow_2024"])
+
+    expected = _prepare_expected_losses(risk_df, result_df)
+    realized = _prepare_realized_losses(chargeoff_df, cashflow_df)
+
+    if expected.empty and realized.empty:
+        st.warning("No expected or realized loss data could be derived from the uploads.")
+        export_controls("backtest_2024")
+        return
+
+    expected_total = expected["expected_loss"].sum() if not expected.empty else 0.0
+    realized_total = realized["realized_amount"].sum() if not realized.empty else 0.0
+    coverage = (realized_total / expected_total) if expected_total else None
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Expected loss (2024 horizon)", f"${expected_total:,.0f}")
+    c2.metric("Realized loss (2024)", f"${realized_total:,.0f}")
+    c3.metric("Realized / Expected", f"{coverage:.1%}" if coverage is not None else "N/A")
+
+    if not realized.empty:
+        timeline = (
+            realized.assign(month=lambda df: df["event_date"].dt.to_period("M"))
+            .groupby("month")["realized_amount"]
+            .sum()
+            .reset_index()
+        )
+        timeline["expected_loss"] = expected_total
+        fig = px.bar(
+            timeline,
+            x="month",
+            y="realized_amount",
+            labels={"realized_amount": "Realized loss", "month": "Month"},
+            title="Realized defaults by month (2024)",
+        )
+        fig.add_scatter(x=timeline["month"].astype(str), y=timeline["expected_loss"], mode="lines", name="Expected")
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Instrument detail")
+    if expected.empty:
+        detail = realized
+    elif realized.empty:
+        detail = expected
+    else:
+        detail = expected.merge(realized, on="instrumentIdentifier", how="left")
+    st.dataframe(detail, use_container_width=True, hide_index=True)
+
+    export_controls(
+        "backtest_2024",
+        dataframes={
+            "expected": expected,
+            "realized": realized,
+            "detail": detail,
+        },
     )
-    export_controls("backtest_2024")

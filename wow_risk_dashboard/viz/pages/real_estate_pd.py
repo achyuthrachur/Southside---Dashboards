@@ -920,7 +920,7 @@ def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
     metric_column = filtered_data.metric_columns[metric_label]
     st.caption(
         "Exposure share reflects each geography's share of amortized cost after the current filters "
-        "are applied (geography amortized cost ÷ total amortized cost)."
+        "are applied (geography amortized cost / total amortized cost)."
     )
 
     if geography_level == "CBSA":
@@ -935,6 +935,8 @@ def render_real_estate_pd_page(filters: Dict[str, str]) -> None:
     export_controls(
         "real_estate_pd",
         dataframes={
-            f"{geography_label.lower()}_summary": summary,
+            "state_summary": filtered_data.state_summary,
+            "cbsa_summary": filtered_data.cbsa_summary,
+            "filtered_instruments": filtered_data.frame,
         },
     )
