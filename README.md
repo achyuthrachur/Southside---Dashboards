@@ -7,7 +7,7 @@ realizations, and default cohorts.
 
 ## What you get
 
-- `data/southside_demo.json` – 360 instruments spanning 12 CBSAs with monthly PD paths, ratings (2023Q2 → 2025Q2), and 2024 charge-offs.
+- `data/southside_demo.json` – ~5,400 instruments spanning dozens of CBSAs across the US with monthly PD paths, ratings (2023Q2 → 2025Q2), and 2024 charge-offs.
 - Geography pulse – state heatmap plus CBSA bubbles sized by exposure.
 - Rating migration – Sankey and transition heatmap to highlight upgrades/downgrades.
 - Risk arc – PD trendlines by scenario and expected vs realized loss bars for 2024.
