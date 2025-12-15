@@ -36,6 +36,11 @@ from .sample import (
     generate_sample_cashflows,
     sample_inputs_for_page,
 )
+from .synthetic_bundle import (
+    build_synthetic_bundle,
+    bundle_to_json,
+    generate_default_json,
+)
 
 __all__ = [
     "AliasMap",
@@ -68,4 +73,7 @@ __all__ = [
     "generate_sample_chargeoffs",
     "generate_sample_cashflows",
     "sample_inputs_for_page",
+    "build_synthetic_bundle",
+    "bundle_to_json",
+    "generate_default_json",
 ]

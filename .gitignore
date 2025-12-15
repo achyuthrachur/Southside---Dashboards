@@ -12,6 +12,7 @@ logs/
 data/*
 !data/cbsa.geojson
 !data/cbsa_metadata.csv
+!data/southside_demo.json
 processed/
 cache/
 dist/
