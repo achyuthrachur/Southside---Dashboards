@@ -1,0 +1,16 @@
+# Exclude heavy data and unused assets from the serverless bundle
+cbsa_json_per_cbsa/
+tl_2023_us_cbsa/
+logs/
+processed/
+.pytest_cache/
+__pycache__/
+
+# Ignore bulky geo/shapefile resources; synthetic data already carries lat/long
+data/*
+!data/southside_demo.json
+
+# Ignore stray CSV/XLSX inputs and test artifacts
+*.csv
+*.xlsx
+tests/
